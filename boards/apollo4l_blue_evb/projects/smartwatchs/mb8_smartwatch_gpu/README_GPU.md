@@ -66,6 +66,39 @@ These were uploaded into the SDK repository and used in the successful builds.
 `make check-libs` detects their absence; no substitute/stub libraries are used.
 `GPU_LIB=/path/to/...` and `NEMA_LIB=/path/to/...` override their locations.
 
+## Flash from Windows / Git Bash
+
+Connect the same J-Link/SWD hardware used for the original watch project. From
+this project's `gcc` directory, run:
+
+```sh
+./flash.bat          # Build and flash the GPU smoke test, then reset/run.
+# After validating the smoke test:
+./flash.bat app      # Build and flash the watch menu plus sensors.
+```
+
+The script always builds `CONFIG=bin` with the selected mode and flashes only
+`bin/mb8_smartwatch_gpu.bin`. It stops without flashing if the build fails. J-Link
+is configured to exit on errors and its exit status is returned to the caller.
+The existing watch settings are preserved: `AMA4B2KP-KXR`, SWD at 4000 kHz,
+application origin `0x00018000`. This is the original project's device identifier,
+not a newly verified identification of the silicon. Do not change the bootloader
+or flash origin unless you have independently verified your watch's layout.
+
+J-Link is searched on PATH, in the original user's `SEGGER/JLink_V812a` directory,
+and in standard Program Files locations. If not found, specify the installed executable:
+
+```sh
+export JLINK_EXE='C:\Users\Padidar\SEGGER\JLink_V812a\JLink.exe'
+./flash.bat
+```
+
+`JLINK_DEVICE` can override the device string if your known-working local setup
+requires another one. The script does not mass-erase or write a bootloader, but
+**it does overwrite the application image**. Keep a known-good firmware and
+working SWD recovery access. The script was reviewed and its build path checked;
+Windows batch execution and physical programming have not been tested here.
+
 ## Rendering architecture
 
 1. Initialize SRAM power configuration, UART and clocks in the setup task.
@@ -142,8 +175,9 @@ cycling until command-list/DMA ownership and retained state have been tested.
 
 Back up a known-good firmware and confirm recovery/SWD access first. Review the
 existing watch-specific bootloader, image-origin and flashing requirements before
-writing anything. No flashing was performed or automatically enabled here.
-The copied flash.bat is disabled; the JLink command file names only the GPU binary.
+writing anything. No flashing was performed by the agent. The local flash.bat
+is enabled and will build, program, reset and run when you explicitly execute it;
+the J-Link command file names only the GPU binary.
 
 1. Start with `GPU_SMOKE_TEST=1`, not the sensor-enabled application.
 2. Confirm the UART initialization message and no LVGL/Nema/heap error.
