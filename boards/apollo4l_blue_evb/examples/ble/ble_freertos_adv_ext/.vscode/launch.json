@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "C/C++ Runner: Debug Session",
+      "type": "cppdbg",
+      "request": "launch",
+      "args": [],
+      "stopAtEntry": false,
+      "externalConsole": true,
+      "cwd": "g:/AmbiqSuiteSDK/AmbiqSuite_R4.5.0/boards/apollo4l_blue_evb/examples/ble/ble_freertos_adv_ext/src",
+      "program": "g:/AmbiqSuiteSDK/AmbiqSuite_R4.5.0/boards/apollo4l_blue_evb/examples/ble/ble_freertos_adv_ext/src/build/Debug/outDebug",
+      "MIMode": "gdb",
+      "miDebuggerPath": "gdb",
+      "setupCommands": [
+        {
+          "description": "Enable pretty-printing for gdb",
+          "text": "-enable-pretty-printing",
+          "ignoreFailures": true
+        }
+      ]
+    }
+  ]
+}

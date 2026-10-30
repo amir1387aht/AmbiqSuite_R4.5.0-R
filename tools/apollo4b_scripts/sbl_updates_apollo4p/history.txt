@@ -1,0 +1,3 @@
+SBL_ap4p_v0p2:
+OTA image corresponding to original production release - purely for test purpose only.
+

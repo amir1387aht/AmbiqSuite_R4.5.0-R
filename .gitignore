@@ -1,0 +1,64 @@
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+
+boards/apollo4b_blue_evb/*
+boards/apollo4b_evb/*
+boards/apollo4l_evb/*
+boards/apollo4p_blue_kbr_evb/*
+boards/apollo4p_blue_kxr_evb/*
+boards/apollo4p_evb/*
+boards/apollo4p_evb_disp_shield_rev2/*
+boards/apollo4l_blue_evb/projects/smartwatchs/mb8_smartwatch_gpu/*
+boards/apollo4l_blue_evb/projects/smartwatchs/mb8_smartwatch/.vs/*
+boards/apollo4l_blue_evb/projects/smartwatchs/mb8_smartwatch/.vs_code/*
+boards/apollo4l_blue_evb/projects/smartwatchs/mb8_smartwatch/.idea/*
