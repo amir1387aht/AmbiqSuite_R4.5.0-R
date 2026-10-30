@@ -17,7 +17,9 @@ static watch_dirty_rows_t dirty_rows;
 static void disp_wait(lv_disp_drv_t *driver)
 {
     if (driver->draw_buf->flushing) {
+        uint32_t start = watch_profile_start();
         BaseType_t completed = xSemaphoreTake(panel_dma_complete, pdMS_TO_TICKS(1000));
+        WATCH_PROFILE_ADD(panel_wait_cycles, start);
         configASSERT(completed == pdTRUE || !driver->draw_buf->flushing);
     }
 }
@@ -72,6 +74,7 @@ void lvgl_display_init(void* pvParameters) {
     //ui_init();
 
     while (1) {
+        uint32_t delay_ms = 5;
         /* All LVGL/GPU/panel state changes stay in this task. Never suspend it
          * from a sensor task in the middle of command-list or DMA work. */
         if (display_sleep_requested) {
@@ -93,9 +96,14 @@ void lvgl_display_init(void* pvParameters) {
                 display_set_brightness(next_brightness);
                 applied_brightness = next_brightness;
             }
-            lv_timer_handler();
+            uint32_t start = watch_profile_start();
+            uint32_t next_timer_ms = lv_timer_handler();
+            WATCH_PROFILE_ADD(handler_cycles, start);
+            if (next_timer_ms < delay_ms) delay_ms = next_timer_ms;
+            watch_gpu_profile_poll();
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        TickType_t delay_ticks = pdMS_TO_TICKS(delay_ms);
+        vTaskDelay(delay_ticks ? delay_ticks : 1);
     }
 }
 
@@ -123,9 +131,11 @@ void disp_flush(lv_disp_drv_t* display, const lv_area_t* area, lv_color_t * px_m
 
     /* LVGL waits for any outstanding DMA before entering this callback. The
      * persistent panel frame must never be modified while DMA reads from it. */
+    uint32_t convert_start = watch_profile_start();
     watch_bgra8888_rect_to_rgb565(
         &panel_pixels[(size_t)area->y1 * display_width + area->x1],
         display_width, px_map, width, height);
+    WATCH_PROFILE_ADD(convert_cycles, convert_start);
     watch_dirty_rows_include(&dirty_rows, (unsigned)area->y1, (unsigned)area->y2);
 
     if (!lv_disp_flush_is_last(display)) {
@@ -156,6 +166,7 @@ void disp_flush(lv_disp_drv_t* display, const lv_area_t* area, lv_color_t * px_m
 void disp_flush_done(void *context) {
     (void)context;
     BaseType_t higher_priority_task_woken = pdFALSE;
+    ++watch_gpu_stats.panel_frames;
     lv_disp_flush_ready(&disp_drv);
     xSemaphoreGiveFromISR(panel_dma_complete, &higher_priority_task_woken);
     portYIELD_FROM_ISR(higher_priority_task_woken);

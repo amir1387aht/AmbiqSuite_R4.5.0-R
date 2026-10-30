@@ -3,8 +3,8 @@
 This project runs the original `mb8_smartwatch` application/menu with SDK-matched
 Ambiq LVGL 8.1.0 and Apollo4 Lite Nema GPU support. The original project is untouched.
 There is a single application path: original menu, light sensor and accelerometer.
-No alternate diagnostic UI, diagnostic timer, mode flag or submission/flush counter
-is included.
+No alternate diagnostic UI, diagnostic timer or smoke-test mode is included.
+The normal app has one-time GPU completion logging and optional UART profiling.
 
 ## Original application settings
 
@@ -59,8 +59,10 @@ adaptations are necessary to keep the selected GPU implementation compatible:
    are coordinated at frame/DMA boundaries rather than interrupting GPU work.
 5. A FreeRTOS-derived millisecond tick drives LVGL. GPU power is retained; automatic
    deep-sleep/power cycling is not qualified and has not been restored blindly.
-6. Existing packed fonts stay packed in MRAM. Direct GPU font-atlas rendering is
-   not enabled; LVGL's CPU glyph fallback and supported GPU blending are used.
+6. Existing packed fonts stay packed in MRAM; their descriptors are not mutated.
+   A 96 KiB shared-SRAM cache converts immutable A4 glyphs to byte-aligned rows
+   for direct Nema text rendering. `LV_AMBIQ_FONT_REALIGN_BITMAP` stays zero so
+   CPU fallback continues to interpret the original packed data correctly.
    Five local SDK font copies and small wrappers for the other incompatible SDK
    descriptors reconcile SDK const declarations without changing font bitmap data.
 
@@ -103,6 +105,74 @@ uses handler busy/idle timing, which includes time spent blocked inside the
 handler; it is not a direct FreeRTOS CPU-utilization measurement. Its calculation
 has not been changed to make the displayed result look better.
 
+## GPU text acceleration and frame pacing
+
+The earlier port disabled the direct GPU letter path because packed MRAM fonts
+cannot be passed directly to Nema. The fallback allocated shared masks and could
+submit/wait for a GPU command list for each tiny scanline fill. These are now
+addressed without changing the UI or the monitor calculation:
+
+- Cache immutable MRAM A4 glyphs in GPU-accessible shared SRAM, with byte-aligned
+  rows including odd-width glyphs. Batch text commands through the existing Ambiq
+  GPU renderer. Cache storage is allocated from the GPU heap before rendering.
+- Cache at most 256 distinct glyphs / 96 KiB; do not evict data still referenced
+  by GPU commands. Unsupported/dynamic fonts, allocation failure or a full cache
+  use CPU fallback. Submit and complete an open text batch before that fallback.
+- Use CPU blending for masked fills of at most 256 pixels rather than paying for
+  a tiny GPU command list and wait. This threshold is a tuning choice, not a
+  measured optimum for this watch.
+- Respect `lv_timer_handler()`'s next deadline instead of always sleeping another
+  5 ms. The original 16 ms refresh/input periods remain unchanged.
+- Require the standard FPS/CPU monitor and Nema backend at compile time. Monitor
+  position remains bottom-middle. No alternate screen or smoke-test mode exists.
+
+### Confirm which firmware and GPU path are running
+
+After reset, the existing debug UART prints:
+
+```text
+GPU glyph-cache-v1: FPS monitor=1 refresh=16 ms profile=0
+```
+
+After a text-bearing command list completes, it prints once:
+
+```text
+GPU TEXT completed: submitted=... HW_CLID=... glyphs=...
+```
+
+The latter is emitted after a Nema wait and a matching/advanced hardware CLID
+read; it is stronger evidence than just `LV_USE_GPU_AMBIQ_NEMA=1`. It does not
+prove every primitive is accelerated, correct pixels, or a particular frame rate.
+If absent, report the startup log rather than assuming GPU text is working.
+
+### Optional on-watch profiling
+
+From Git Bash in this project's `gcc` directory:
+
+```sh
+GPU_PROFILE=1 ./flash.bat
+```
+
+Pass the flag to the script itself: it invokes make again. Running plain
+`./flash.bat` afterwards returns to the default profiling-off build. A compiler
+flag stamp rebuilds objects when this option changes, even in the same output
+directory. A separate host build is also possible: `make CONFIG=bin-profile GPU_PROFILE=1 -j8`.
+
+During continuous menu scrolling, capture several `GPUprof` lines from UART:
+
+- `dma_fps`: completed panel DMA transfers per second, not LCD scan frequency.
+- `te_hz`: observed TE edges per second; helps expose a panel/TE limit.
+- `cl`, `glyph_gpu`, `glyph_cpu`, `cache_new`, `cache_hit`: interval counts of
+  submissions, accepted glyph commands/fallbacks and cache activity.
+- `handler_ms`, `convert_ms`, `gpuwait_ms`, `panelwait_ms`: DWT-cycle-derived
+  interval totals at configured 192 MHz. They are inclusive/nested, not additive
+  utilization percentages; clock gating, sleep and other tasks can affect them.
+- `hw`: latest observed completed GPU hardware command-list ID.
+
+Profile output adds UART overhead and is disabled by default. Use active, awake
+scrolling for comparison. The ordinary FPS overlay stays on in both builds.
+50–60 FPS remains an on-device target, not a verified outcome of these changes.
+
 ## Memory layout
 
 | Region | Start | Reserved/available size |
@@ -115,8 +185,10 @@ has not been changed to make the displayed result look better.
 
 The general shared region includes a 4 KiB MSP stack, 16 KiB C heap, draw buffers,
 188,160-byte RGB565 staging frame, and FreeRTOS heap. Current linked usage of
-that 512 KiB general shared region is 425,088 bytes (81.08%). Linker reservations/assertions prevent pool
-collisions. External allocation requests use the initialized shared pool, not PSRAM.
+that 512 KiB general shared region is 428,224 bytes (81.68%). Linker reservations/assertions prevent pool
+collisions. The glyph arena additionally consumes 96 KiB of the reserved 512 KiB
+GPU shared pool at runtime, not another static allocation in the general region.
+External allocation requests use the initialized shared pool, not PSRAM.
 
 Required vendor archives (already present in the updated SDK):
 
@@ -132,11 +204,15 @@ python3 tests/test_app_default.py
 python3 tests/test_source_discovery.py
 python3 tests/test_flash_config.py
 python3 tests/test_display_pipeline.py
+python3 tests/test_gpu_glyph_path.py
+python3 tests/test_font_cache_assets.py
 python3 tests/validate_port.py
 cc -std=c11 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_rgb565.c -o /tmp/test_rgb565
 /tmp/test_rgb565
 cc -std=c11 -O2 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_framebuffer.c -o /tmp/test_framebuffer
 /tmp/test_framebuffer
+cc -std=c11 -O2 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_glyph_cache.c -o /tmp/test_glyph_cache
+/tmp/test_glyph_cache
 python3 tests/verify_firmware.py
 ```
 

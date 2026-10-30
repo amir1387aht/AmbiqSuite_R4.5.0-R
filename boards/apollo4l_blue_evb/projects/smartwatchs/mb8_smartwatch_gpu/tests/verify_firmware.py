@@ -15,6 +15,11 @@ for mode in [sys.argv[1] if len(sys.argv) > 1 else 'bin']:
  symbols={m[2]:int(m[1],16) for line in nm.splitlines() if (m:=re.match(r'([0-9a-fA-F]+)\s+\w\s+(\S+)',line))}
  data=binary.read_bytes(); sp,reset=struct.unpack_from('<II',data)
  assert b'%u FPS\n%u%% CPU' in data, 'Original LVGL FPS/CPU monitor missing from linked image'
+ assert b'GPU glyph-cache-v1: FPS monitor=' in data
+ assert b'GPU TEXT completed: submitted=' in data
+ assert 'watch_gpu_glyph_bitmap' in symbols
+ assert 'watch_gpu_note_completed' in symbols
+ assert 'glyph_cache' in symbols
  assert not any(name.startswith(('watch_gpu_' + 'smoke', 'watch_gpu_submissions', 'watch_gpu_completed_waits', 'watch_panel_flushes')) for name in symbols)
  assert 0x10060000<=sp<0x100e0000 and sp%8==0
  assert reset&1 and (reset&~1)==symbols['Reset_Handler']

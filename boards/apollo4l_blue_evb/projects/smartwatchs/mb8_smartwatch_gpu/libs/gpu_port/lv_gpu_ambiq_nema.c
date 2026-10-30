@@ -44,6 +44,8 @@
 //*****************************************************************************
 #include "lvgl.h"
 #include "lv_gpu_ambiq_nema.h"
+#include "watch_glyph_cache.h"
+#include "watch_gpu.h"
 
 #include "am_mcu_apollo.h"
 
@@ -214,6 +216,7 @@ static CommandListManage_t CLManage =
 
 //! CL used by label widget
 static nema_cmdlist_t* pLabelCL;
+static uint32_t label_gpu_glyphs;
 
 // Allocate memory and create CL
 static nema_cmdlist_t* create_cl(uint32_t cl_size, bool circular);
@@ -271,10 +274,13 @@ static lv_res_t lv_gpu_ambiq_nema_draw_line_dashed(const lv_point_t * point1,
  * be in shared SRAM; packed MRAM UI images use LVGL's CPU fallback. */
 static void watch_wait_cl(nema_cmdlist_t *cl)
 {
+    uint32_t start = watch_profile_start();
     if (nema_cl_wait(cl) != 0) {
         LV_LOG_ERROR("GPU command-list wait failed; refusing to flush stale pixels");
         for (;;) { /* Inspect GPU IRQ 28 / error status with the debugger. */ }
     }
+    WATCH_PROFILE_ADD(gpu_wait_cycles, start);
+    watch_gpu_note_completed(cl->submission_id, nema_reg_read(NEMA_CLID));
 }
 
 static bool watch_gpu_accessible(const void *ptr)
@@ -584,6 +590,9 @@ static void lv_gpu_ambiq_nema_cl_submit_link(nema_cmdlist_t* cl)
 {
     //Start GPU, submit CL
     nema_cl_submit(cl);
+    if (nema_get_error() == NEMA_ERR_NO_ERROR)
+        watch_gpu_note_submit(cl->submission_id, cl == pLabelCL ? label_gpu_glyphs : 0);
+    if (cl == pLabelCL) label_gpu_glyphs = 0;
 
 #ifdef LV_GPU_AMBIQ_DEBUG_CL
     watch_wait_cl(cl);
@@ -604,7 +613,7 @@ static void lv_gpu_ambiq_nema_cl_submit_link(nema_cmdlist_t* cl)
     if(rb_ret)
     {
         //Wait for GPU.
-        watch_wait_cl(CLManage.cl_head);
+        watch_wait_cl(CLManage.cl_head ? CLManage.cl_head : cl);
     }
 
     //Unbind the CL
@@ -673,7 +682,10 @@ lv_res_t lv_gpu_ambiq_nema_fill(const lv_area_t * disp_area,
                             lv_color_t color, lv_opa_t opa,
                             const lv_opa_t * mask, lv_draw_mask_res_t mask_res)
 {
-    if (mask_res == LV_DRAW_MASK_RES_CHANGED && !watch_gpu_accessible(mask)) {
+    /* A scanline-sized masked fill is cheaper on the CPU than allocating,
+     * submitting and waiting for a GPU CL. These framebuffers are CPU-visible. */
+    if (mask_res == LV_DRAW_MASK_RES_CHANGED &&
+        (lv_area_get_size(draw_area) <= 256 || !watch_gpu_accessible(mask))) {
         lv_gpu_ambiq_nema_wait(NULL);
         return LV_RES_INV;
     }
@@ -1174,11 +1186,8 @@ exit:
 
 lv_res_t lv_gpu_ambiq_nema_draw_label_pre(const lv_area_t * clip_area, lv_blend_mode_t blend_mode)
 {
-#if !LV_AMBIQ_FONT_REALIGN_BITMAP
-    return LV_RES_INV;
-#endif
-
     LV_ASSERT(pLabelCL == NULL);
+    label_gpu_glyphs = 0;
 
     lv_res_t check_ret = lv_gpu_ambiq_nema_check_common(clip_area, blend_mode);
     if(check_ret != LV_RES_OK)
@@ -1207,11 +1216,8 @@ void lv_gpu_ambiq_nema_draw_label_post(void)
 
 lv_res_t lv_gpu_ambiq_nema_draw_letter_pre(const lv_area_t * clip_area, lv_blend_mode_t blend_mode)
 {
-#if !LV_AMBIQ_FONT_REALIGN_BITMAP
-    return LV_RES_INV;
-#endif
-
     LV_ASSERT(pLabelCL == NULL);
+    label_gpu_glyphs = 0;
 
     lv_res_t check_ret = lv_gpu_ambiq_nema_check_common(clip_area, blend_mode);
     if(check_ret != LV_RES_OK)
@@ -1242,17 +1248,24 @@ lv_res_t lv_gpu_ambiq_nema_draw_letter(lv_coord_t pos_x, lv_coord_t pos_y, lv_fo
                                              const lv_area_t * clip_area,
                                              const uint8_t * map_p, lv_color_t color, lv_opa_t opa, lv_blend_mode_t blend_mode)
 {
-#if !LV_AMBIQ_FONT_REALIGN_BITMAP
-    /* Original watch fonts are packed and may reside in MRAM. Do not hand
-     * them to Nema. LVGL's caller waits for GPU and uses CPU blending. */
-    return LV_RES_INV;
-#endif
-
-    //pLabelCL must have been set.
+    // No batch means an underlying mask/blend mode requires CPU rendering.
     if(pLabelCL == NULL)
     {
+        ++watch_gpu_stats.cpu_glyphs;
         return LV_RES_INV;
     }
+
+    const uint8_t *gpu_bitmap = watch_gpu_glyph_bitmap(map_p, g->box_w, g->box_h, g->bpp);
+    if (gpu_bitmap == NULL) {
+        /* Earlier glyphs in this open label CL may still reference the same
+         * destination. Submit and finish them before the CPU touches it. */
+        lv_gpu_ambiq_nema_cl_submit_link(pLabelCL);
+        pLabelCL = NULL;
+        lv_gpu_ambiq_nema_wait(NULL);
+        ++watch_gpu_stats.cpu_glyphs;
+        return LV_RES_INV;
+    }
+    map_p = gpu_bitmap;
 
     //Check CL left space
     if((pLabelCL->size - pLabelCL->offset) < CHAR_CMD_NUMBER*2)
@@ -1297,6 +1310,8 @@ lv_res_t lv_gpu_ambiq_nema_draw_letter(lv_coord_t pos_x, lv_coord_t pos_y, lv_fo
         return LV_RES_INV;
     }
 
+    ++label_gpu_glyphs;
+    ++watch_gpu_stats.gpu_glyphs;
     //Unbind current cl
     nema_cl_unbind();
     LV_ASSERT(nema_get_error() == NEMA_ERR_NO_ERROR);

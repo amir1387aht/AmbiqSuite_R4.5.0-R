@@ -1,4 +1,5 @@
 #include "./display.h"
+#include "watch_gpu.h"
 
 __attribute__((section(".display_buffer"), aligned(32)))
 lv_color_t display_buffer1[DRAW_BUF_SIZE];
@@ -322,6 +323,9 @@ uint32_t am_devices_display_set_scanline_recommended_parameter(
 }
 
 static void am_devices_display_te_handler(void* pvUnused) {
+#if WATCH_GPU_PROFILE
+    ++watch_gpu_stats.te_edges;
+#endif
 	//
 	// Transfer the frame when TE interrupt arrives.
 	//

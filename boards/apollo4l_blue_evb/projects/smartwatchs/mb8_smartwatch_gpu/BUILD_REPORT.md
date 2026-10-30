@@ -10,24 +10,25 @@ One application only: original menu, light sensor and accelerometer, with the
 Apollo4 Lite Nema GPU integration and SDK LVGL 8.1.0. Original monitor/font/log
 settings are restored: FPS/CPU monitor enabled at bottom-middle, all original
 Montserrat sizes enabled, LVGL logging disabled, memory monitor disabled.
-No alternate UI, diagnostic timer/counters or mode selection is compiled.
+No alternate UI, diagnostic timer or smoke-test mode is compiled. One-time GPU
+completion logging is present; per-second UART profiling is opt-in.
 
 ## Clean build result
 
-`make -j8` in `gcc` successfully compiled 200 translation units and linked the
+`make -j8` in `gcc` successfully compiled 201 translation units and linked the
 actual vendor GPU libraries. No unresolved ELF symbols remain. Existing SDK/watch
 compiler warnings remain; this is not a warnings-free claim.
 
 | Item | Value |
 | --- | --- |
 | Binary | gcc/bin/mb8_smartwatch_gpu.bin |
-| Binary/MRAM bytes | 395,296 |
-| SHA-256 | e2d08cfba5d93416e490d5160c59627ea97fa5060ffc703d87536a3e21d45229 |
+| Binary/MRAM bytes | 396,684 |
+| SHA-256 | d11a2eab6f7241cd1f223bf646a2e193d45ba0b644249f954192e5f8b7355243 |
 | Initial SP | 0x10061000 |
-| Reset vector | 0x46275 |
-| GPU IRQ 28 vector | 0x43965 |
+| Reset vector | 0x46605 |
+| GPU IRQ 28 vector | 0x43cfd |
 | CPU TCM used | 4,888 bytes |
-| General shared SRAM used | 425,088 bytes |
+| General shared SRAM used | 428,224 bytes |
 | Additional reserved LVGL TCM pool | 128 KiB |
 | Additional reserved LVGL GPU shared pool | 512 KiB |
 
@@ -39,7 +40,7 @@ compiler warnings remain; this is not a warnings-free claim.
 - All original font settings, FPS/CPU monitor position, and logging settings match
   the original lv_conf.h. Linked binary contains the actual LVGL FPS/CPU format text.
 - Source enumeration works without a shell: 26 application sources, 130 remaining
-  SDK LVGL sources, plus local port/font override sources, for 200 units total.
+  SDK LVGL sources, plus local port/font override sources, for 201 units total.
 - No undefined symbols; GPU IRQ reaches the strong SDK ISR, not default handler.
 - SP/reset vectors, reserved heaps and aligned shared-SRAM buffers verified.
 - Binary contains no removed diagnostic counters or alternate-screen symbol.
@@ -60,7 +61,8 @@ Vendor archive SHA-256:
 No physical watch/probe or Windows runtime was available to the agent. Script
 checks are static; compile/link and host tests do not establish hardware rendering,
 menu behavior, touch/sensors, actual frame rate, power or sleep/wake correctness.
-GPU font-atlas acceleration and production deep-sleep integration remain deferred.
+Production deep-sleep integration remains deferred. GPU A4 glyph acceleration
+is implemented with a per-glyph cache; hardware pixel correctness is unverified.
 GPU-specific color ABI, memory layout, initialization, DMA synchronization and tick
 adaptations remain; this is not a byte-identical build of the non-GPU application.
 
@@ -80,11 +82,45 @@ Additional passed checks:
 - Integration structure submits only on the last flush and releases the staging
   frame only after DMA; ISR priority is compatible with FreeRTOS semaphore APIs.
 - Linked staging buffer size is exactly 188,160 bytes, aligned in shared SRAM,
-  and ends before the GPU allocator pool. General shared usage is 81.08%.
-- A fresh 200-unit build in bin-final produces the same binary as the default bin
+  and ends before the GPU allocator pool. General shared usage is 81.68%.
+- A fresh 201-unit build in bin-final produces the same binary as the default bin
   build; both ELF checks pass with no unresolved symbols.
 
 No on-device performance improvement is claimed yet. Retest the same original
 menu scroll on the watch and check both FPS and visual/transfer correctness.
 Standard LVGL CPU percentage is handler busy/idle timing, including blocked
 handler time; the monitor is unchanged, not substituted with a more flattering one.
+
+## GPU glyph/pacing follow-up
+
+Direct Nema label/letter rendering is now enabled through a 96 KiB shared-SRAM
+A4 cache, without changing the original packed MRAM font descriptors or setting
+the global realigned-font flag. Maximum 256 entries, no eviction; exhaustion or
+unsupported formats synchronize and use CPU fallback. Masked fills up to 256
+pixels avoid individual GPU submit/wait overhead. Task pacing uses LVGL's next
+timer deadline, keeping the original 16 ms refresh period.
+
+The source and linked image enforce/preserve the actual LVGL FPS/CPU monitor.
+Startup identifies `glyph-cache-v1`; a one-time text completion message checks
+Nema wait completion against the hardware CLID. Optional `GPU_PROFILE=1` reports
+DMA completion FPS, TE rate, glyph/cache counts and inclusive DWT timing totals.
+See README_GPU.md for the profiling flash command and interpretation limits.
+
+Additional passed host/static checks:
+- 4,225 packed-A4 layouts (width/height 1..65), per-pixel values, odd-row padding,
+  guard bytes, cache hits/alignment, table/arena exhaustion and input guards.
+- All 780 glyphs / 457,432 pixels in the five local SDK fonts match their source
+  bitmaps after row conversion; odd-width packed input explicitly exercised.
+- Cached GPU path, synchronized CPU fallback, tiny-mask threshold, completion hook,
+  16 ms refresh, FPS/GPU settings and adaptive task pacing checked structurally.
+- Default and profiling configurations compile/link 201 units with no unresolved
+  symbols. Default verification includes startup/completion text and cache code.
+
+Profiling build (`make CONFIG=bin-profile GPU_PROFILE=1 -j8`):
+- Binary/MRAM: 397,360 bytes; general shared SRAM: 428,288 bytes (81.69%).
+- SHA-256: 3e334657572baee9c2bd7aee8f624230497e518871677b374b0e8a4024484b28.
+- Initial SP 0x10061000; reset vector 0x46825; GPU IRQ 28 vector 0x43f15.
+
+No hardware benchmark or sanitizer success is claimed. Host bitmap tests do not
+emulate the GPU rasterizer. Neither 50–60 FPS nor reduced device CPU load is
+established by compilation, completion counters or these tests.
