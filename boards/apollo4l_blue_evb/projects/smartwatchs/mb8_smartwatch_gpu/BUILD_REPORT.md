@@ -21,13 +21,13 @@ compiler warnings remain; this is not a warnings-free claim.
 | Item | Value |
 | --- | --- |
 | Binary | gcc/bin/mb8_smartwatch_gpu.bin |
-| Binary/MRAM bytes | 394,848 |
-| SHA-256 | 3384a6717a1eb269b0413d0e610f228b94735497a37906de900f8a43c3e41fb7 |
+| Binary/MRAM bytes | 395,296 |
+| SHA-256 | e2d08cfba5d93416e490d5160c59627ea97fa5060ffc703d87536a3e21d45229 |
 | Initial SP | 0x10061000 |
-| Reset vector | 0x460e5 |
-| GPU IRQ 28 vector | 0x437d9 |
+| Reset vector | 0x46275 |
+| GPU IRQ 28 vector | 0x43965 |
 | CPU TCM used | 4,888 bytes |
-| General shared SRAM used | 261,504 bytes |
+| General shared SRAM used | 425,088 bytes |
 | Additional reserved LVGL TCM pool | 128 KiB |
 | Additional reserved LVGL GPU shared pool | 512 KiB |
 
@@ -63,3 +63,28 @@ menu behavior, touch/sensors, actual frame rate, power or sleep/wake correctness
 GPU font-atlas acceleration and production deep-sleep integration remain deferred.
 GPU-specific color ABI, memory layout, initialization, DMA synchronization and tick
 adaptations remain; this is not a byte-identical build of the non-GPU application.
+
+## Display transport regression correction
+
+Identified in code: 64-line partial draw buffers were each submitted as their own
+TE-gated panel frame, and the display wait callback was absent. The correction
+stages all partial rectangles in a 188,160-byte RGB565 frame, submits the union
+of dirty rows only on LVGL's last flush, and blocks on a dedicated DMA-completion
+semaphore rather than polling. The existing panel driver, menu, sensors, fonts,
+monitor and flash.bat are unchanged by this follow-up.
+
+Additional passed checks:
+- Actual strided conversion helper assembles a 192x490 frame from eight stripes.
+- 435 partial rectangles preserve every untouched pixel.
+- Dirty-row union/reset covers multiple invalid areas and complete redraws.
+- Integration structure submits only on the last flush and releases the staging
+  frame only after DMA; ISR priority is compatible with FreeRTOS semaphore APIs.
+- Linked staging buffer size is exactly 188,160 bytes, aligned in shared SRAM,
+  and ends before the GPU allocator pool. General shared usage is 81.08%.
+- A fresh 200-unit build in bin-final produces the same binary as the default bin
+  build; both ELF checks pass with no unresolved symbols.
+
+No on-device performance improvement is claimed yet. Retest the same original
+menu scroll on the watch and check both FPS and visual/transfer correctness.
+Standard LVGL CPU percentage is handler busy/idle timing, including blocked
+handler time; the monitor is unchanged, not substituted with a more flattering one.

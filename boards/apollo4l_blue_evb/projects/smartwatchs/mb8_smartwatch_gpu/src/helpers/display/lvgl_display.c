@@ -5,8 +5,22 @@
 #include "nema_sys_defs.h"
 #include "watch_gpu.h"
 #include "watch_rgb565.h"
+#include "watch_framebuffer.h"
+#include "semphr.h"
 
 static lv_disp_drv_t disp_drv;
+static SemaphoreHandle_t panel_dma_complete;
+static watch_dirty_rows_t dirty_rows;
+
+/* LVGL calls this while draw_buf->flushing is set. Do not burn CPU spinning
+ * for TE or DMA completion; the MSPI ISR releases the dedicated semaphore. */
+static void disp_wait(lv_disp_drv_t *driver)
+{
+    if (driver->draw_buf->flushing) {
+        BaseType_t completed = xSemaphoreTake(panel_dma_complete, pdMS_TO_TICKS(1000));
+        configASSERT(completed == pdTRUE || !driver->draw_buf->flushing);
+    }
+}
 static volatile bool display_sleep_requested;
 static volatile bool display_awake;
 static volatile uint8_t requested_brightness = 175;
@@ -14,14 +28,18 @@ static uint8_t applied_brightness = 175;
 static lv_indev_drv_t indev_drv;
 static img_obj_t gpu_framebuffer = { .w = display_width, .h = DRAW_BUF_LINES,
                                     .format = NEMA_BGRA8888 };
-/* LVGL serializes flushes until disp_flush_done, so one transport buffer is
- * sufficient while two independent BGRA draw buffers allow GPU/MSPI overlap. */
+/* Keep a complete RGB565 panel image, independent of the small GPU draw buffers.
+ * Submit dirty rows only on LVGL's last flush: the TE-driven panel transport
+ * sees one transfer per refresh, not one panel refresh per 64-line stripe. */
 __attribute__((section(".display_buffer"), aligned(32)))
-static uint16_t panel_pixels[DRAW_BUF_SIZE];
+static uint16_t panel_pixels[display_width * display_height];
 _Static_assert(sizeof(lv_color_t) == 4, "Ambiq GPU archive requires 32-bit color");
 
 void lvgl_display_init(void* pvParameters) {
     while (!watch_gpu_ready) vTaskDelay(pdMS_TO_TICKS(1));
+    panel_dma_complete = xSemaphoreCreateBinary();
+    configASSERT(panel_dma_complete != NULL);
+    memset(panel_pixels, 0, sizeof(panel_pixels));
     display_init();
     touch_init();
 
@@ -32,6 +50,7 @@ void lvgl_display_init(void* pvParameters) {
     disp_drv.hor_res = display_width;
     disp_drv.ver_res = display_height;
     disp_drv.flush_cb = disp_flush;
+    disp_drv.wait_cb = disp_wait;
     disp_drv.gpu_wait_cb = lv_gpu_ambiq_nema_wait;
     disp_drv.draw_buf = &draw_buf;
     disp_drv.user_data = &gpu_framebuffer;
@@ -96,19 +115,50 @@ void lvgl_log_cb(const char * buf)
 void disp_flush(lv_disp_drv_t* display, const lv_area_t* area, lv_color_t * px_map) {
     /* LVGL calls gpu_wait_cb first; repeat defensively for direct flush calls. */
     lv_gpu_ambiq_nema_wait(display);
-    uint32_t pixel_count = (uint32_t)lv_area_get_width(area) * lv_area_get_height(area);
-    configASSERT(pixel_count <= DRAW_BUF_SIZE);
-    for (uint32_t i = 0; i < pixel_count; ++i) {
-        panel_pixels[i] = watch_bgra8888_to_rgb565(px_map[i].full);
+    uint32_t width = (uint32_t)lv_area_get_width(area);
+    uint32_t height = (uint32_t)lv_area_get_height(area);
+    configASSERT(area->x1 >= 0 && area->y1 >= 0);
+    configASSERT(area->x2 < display_width && area->y2 < display_height);
+    configASSERT(width * height <= DRAW_BUF_SIZE);
+
+    /* LVGL waits for any outstanding DMA before entering this callback. The
+     * persistent panel frame must never be modified while DMA reads from it. */
+    watch_bgra8888_rect_to_rgb565(
+        &panel_pixels[(size_t)area->y1 * display_width + area->x1],
+        display_width, px_map, width, height);
+    watch_dirty_rows_include(&dirty_rows, (unsigned)area->y1, (unsigned)area->y2);
+
+    if (!lv_disp_flush_is_last(display)) {
+        /* Pixels are now owned by the persistent frame. No panel DMA was
+         * started, so LVGL can immediately reuse this partial draw buffer. */
+        lv_disp_flush_ready(display);
+        return;
     }
+
+    /* Submit exactly once for all stripes and all invalid areas in this refresh.
+     * The untouched parts of a partial refresh retain their previous pixels. */
+    while (xSemaphoreTake(panel_dma_complete, 0) == pdTRUE) {}
+    configASSERT(dirty_rows.valid);
+    /* A full-width row range is contiguous in the persistent frame. Keep
+     * partial updates bounded vertically instead of transmitting 490 rows
+     * when only a small label changed. Gaps retain their previous pixels. */
+    lv_area_t panel_area = {
+        .x1 = 0, .y1 = (lv_coord_t)dirty_rows.first,
+        .x2 = display_width - 1, .y2 = (lv_coord_t)dirty_rows.last
+    };
     __DSB();
     am_hal_daxi_control(AM_HAL_DAXI_CONTROL_FLUSH, NULL);
-    display_update_area(area, (uint8_t *)panel_pixels, disp_flush_done);
+    display_update_area(&panel_area,
+        (uint8_t *)&panel_pixels[dirty_rows.first * display_width], disp_flush_done);
+    dirty_rows.valid = false;
 }
 
 void disp_flush_done(void *context) {
     (void)context;
+    BaseType_t higher_priority_task_woken = pdFALSE;
     lv_disp_flush_ready(&disp_drv);
+    xSemaphoreGiveFromISR(panel_dma_complete, &higher_priority_task_woken);
+    portYIELD_FROM_ISR(higher_priority_task_woken);
 }
 
 void touchpad_read(lv_indev_drv_t* drv, lv_indev_data_t* data) {

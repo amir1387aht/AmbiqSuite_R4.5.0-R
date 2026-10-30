@@ -27,6 +27,10 @@ for mode in [sys.argv[1] if len(sys.argv) > 1 else 'bin']:
  for name in ['display_buffer1','display_buffer2','panel_pixels']:
   assert 0x10060000<=symbols[name]<0x100e0000 and symbols[name]%32==0,(name,symbols[name])
  assert symbols['_edata']<=symbols['__lvgl_tcm_start__']
+ sized=subprocess.check_output([str(T/'arm-none-eabi-nm'),'-S',str(elf)],text=True)
+ match=re.search(r'^([0-9a-fA-F]+) ([0-9a-fA-F]+) \w panel_pixels$',sized,re.M)
+ assert match and int(match[2],16)==192*490*2
+ assert int(match[1],16)+int(match[2],16)<=symbols['__lvgl_ssram_start__']
  depfiles=list((d/'obj').rglob('*.d'))
  assert all('../libs/lvgl' not in f.read_text() for f in depfiles)
  results[mode]={'binary_bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'stack_pointer':hex(sp),'reset_vector':hex(reset),'gpu_irq28_vector':hex(gpu_vector),'compiled_units':len(list((d/'obj').rglob('*.o'))),'unresolved_symbols':0}

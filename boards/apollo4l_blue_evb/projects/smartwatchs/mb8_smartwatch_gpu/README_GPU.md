@@ -49,8 +49,9 @@ adaptations are necessary to keep the selected GPU implementation compatible:
 1. SDK LVGL 8.1.0, Ambiq port archive, and Apollo4l Nema HAL are compiled together.
    The original LVGL 8.4 library is not compiled or mixed into this ABI.
 2. Vendor porting ABI uses 32-bit LVGL color. Two aligned BGRA8888 draw buffers
-   render into shared SRAM; completed regions are converted to RGB565 for the
-   existing MSPI/Raydium panel driver. Generated image bytes/descriptors were
+   render into shared SRAM; completed regions are converted into a persistent
+   full-panel RGB565 staging frame. On LVGL's last flush, one contiguous dirty-row
+   range is sent through the unchanged MSPI/Raydium panel driver. Generated image bytes/descriptors were
    adapted to BGRA8888 without changing their source colors or alpha.
 3. Nema allocators are initialized before sensor/panel DMA. Setup stack, task
    allocation checks, GPU interrupt/completion handling and DAXI flushing remain.
@@ -67,6 +68,41 @@ Shared SDK files are not modified. No EVB display shield, NemaDC/DSI transport, 
 external PSRAM configuration is imported. Unused legacy library/reference assets
 remain available in `../mb8_smartwatch` instead of being duplicated here.
 
+## Display pipeline performance correction
+
+The original application had full-height RGB565 draw buffers. The initial GPU
+port used two 64-line BGRA buffers but still called the TE-gated panel transfer
+for every partial flush. A full-height refresh therefore queued eight separate
+panel transfers, each waiting for another TE pulse. LVGL also lacked a display
+wait callback and spun while transfers were pending. These are transport
+serialization defects, not evidence that the GPU itself takes that long to draw.
+
+The corrected pipeline:
+
+1. Keep the small GPU draw buffers, but copy each completed area into a separate
+   persistent 192 x 490 RGB565 staging frame.
+2. Immediately release non-final partial draw buffers after copying, without
+   starting panel DMA or consuming a TE pulse.
+3. Use `lv_disp_flush_is_last()` to submit one full-width dirty-row range for the
+   complete refresh. Union dirty rows across multiple invalid areas; preserve
+   previously displayed pixels outside modified rectangles.
+4. The unchanged original panel driver waits for TE once for this transfer.
+5. Keep the final LVGL flush pending until the DMA callback completes. LVGL's
+   dedicated display wait callback blocks on an ISR-signaled binary semaphore
+   instead of burning CPU in its flushing loop. The MSPI IRQ priority permits
+   FreeRTOS FromISR calls. GPU and panel completion semaphores are independent.
+
+The staging frame is initialized before use and is never modified while DMA is
+reading it. DAXI is flushed before DMA. Narrow invalidations can transmit extra
+columns because rows are sent full-width, but untouched rows are not transmitted.
+No menu/widget/font/monitor/flash-script changes accompany this correction.
+
+This fixes identified source-level serialization. On-device FPS, visual integrity,
+CPU load and power are not measured by host tests. The standard LVGL CPU overlay
+uses handler busy/idle timing, which includes time spent blocked inside the
+handler; it is not a direct FreeRTOS CPU-utilization measurement. Its calculation
+has not been changed to make the displayed result look better.
+
 ## Memory layout
 
 | Region | Start | Reserved/available size |
@@ -78,7 +114,8 @@ remain available in `../mb8_smartwatch` instead of being duplicated here.
 | LVGL GPU shared pool | 0x100e0000 | 512 KiB reserved |
 
 The general shared region includes a 4 KiB MSP stack, 16 KiB C heap, draw buffers,
-transport buffer, and FreeRTOS heap. Linker reservations/assertions prevent pool
+188,160-byte RGB565 staging frame, and FreeRTOS heap. Current linked usage of
+that 512 KiB general shared region is 425,088 bytes (81.08%). Linker reservations/assertions prevent pool
 collisions. External allocation requests use the initialized shared pool, not PSRAM.
 
 Required vendor archives (already present in the updated SDK):
@@ -94,9 +131,12 @@ From this project's root, with the Arm toolchain on PATH:
 python3 tests/test_app_default.py
 python3 tests/test_source_discovery.py
 python3 tests/test_flash_config.py
+python3 tests/test_display_pipeline.py
 python3 tests/validate_port.py
 cc -std=c11 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_rgb565.c -o /tmp/test_rgb565
 /tmp/test_rgb565
+cc -std=c11 -O2 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_framebuffer.c -o /tmp/test_framebuffer
+/tmp/test_framebuffer
 python3 tests/verify_firmware.py
 ```
 
