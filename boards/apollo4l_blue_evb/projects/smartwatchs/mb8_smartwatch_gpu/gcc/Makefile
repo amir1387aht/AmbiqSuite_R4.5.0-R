@@ -8,7 +8,8 @@ CC := $(TOOLCHAIN)-gcc
 OBJCOPY := $(TOOLCHAIN)-objcopy
 SIZE := $(TOOLCHAIN)-size
 JOBS ?= 8
-GPU_SMOKE_TEST ?= 1
+# Preserve the original watch app/menu by default; diagnostics are opt-in.
+GPU_SMOKE_TEST ?= 0
 SHELL := /bin/bash
 
 LVGL_DIR := $(ROOT_DIR)/third_party/LVGL/lvgl

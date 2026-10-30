@@ -48,3 +48,12 @@ Both configurations were rebuilt with GCC 14.2.1; firmware hashes and sizes are
 unchanged from the results above. Both ELF validation runs passed. Native Windows
 execution was not available; POSIX build recipes still need Git Bash/MSYS2 tools.
 The SDK signedness warning is separate from the missing-source link failure.
+
+## Follow-up: preserve original application as default
+
+Changed GPU_SMOKE_TEST's makefile default from 1 to 0. Plain make now builds the
+original screen_menu_create() path plus light/accelerometer initialization/tasks;
+the GPU diagnostic screen is opt-in only. Original menu source files are identical
+to the source project. GPU integration fixes are retained. flash.bat was not
+changed by this follow-up. The repository wrapper's explicit app/smoke options
+remain available for users who retained that wrapper.

@@ -23,11 +23,14 @@ Run these commands from **this project's gcc directory** after putting the Arm
 GNU toolchain's `bin` directory on PATH:
 
 ```sh
-# Default: controlled GPU smoke screen, sensor tasks disabled.
-make all GPU_SMOKE_TEST=1 CONFIG=bin-smoke -j8
+# Default: original watch menu and sensor tasks, using the GPU-capable LVGL stack.
+make
 
-# Original watch menu and sensor tasks, using the GPU-capable LVGL stack.
+# Separate application output directory (optional).
 make all GPU_SMOKE_TEST=0 CONFIG=bin-app -j8
+
+# Opt-in diagnostics only: GPU smoke screen, sensor tasks disabled.
+make all GPU_SMOKE_TEST=1 CONFIG=bin-smoke -j8
 ```
 
 ### Windows source-discovery fix
@@ -44,14 +47,18 @@ After updating, use a clean rebuild from the gcc directory:
 
 ```sh
 make clean CONFIG=bin
-make all GPU_SMOKE_TEST=1 CONFIG=bin -j8
+make all CONFIG=bin -j8
 ```
 
 The SDK `am_hal_card.h` signedness warning is unrelated to those missing symbols;
 it is not a linker error. Shared SDK source is intentionally unchanged.
 
 Each output directory contains `mb8_smartwatch_gpu.axf`, `.bin`, and `.map`.
-Plain `make` builds the smoke configuration in `gcc/bin`.
+Plain `make` builds the original watch application in `gcc/bin`.
+It calls the original `screen_menu_create()` and enables the light/accelerometer
+initialization and tasks. The menu source files are unchanged from the original
+project. The original commented `ui_init()` remains commented; no UI redesign is
+introduced. GPU/display synchronization and SDK compatibility adaptations remain.
 The separate output directories make the two configurations easy to identify.
 A build-mode stamp also forces recompilation when changing GPU_SMOKE_TEST in the
 same output directory. The project-level Makefile forwards to `gcc`.
@@ -66,7 +73,20 @@ These were uploaded into the SDK repository and used in the successful builds.
 `make check-libs` detects their absence; no substitute/stub libraries are used.
 `GPU_LIB=/path/to/...` and `NEMA_LIB=/path/to/...` override their locations.
 
-## Flash from Windows / Git Bash
+## Original simple flashing workflow
+
+The original two-line `flash.bat` can be kept: `make` now selects the original
+watch application/menu and sensors, not the diagnostic screen. The existing
+J-Link command file loads `bin/mb8_smartwatch_gpu.bin`. When changing from the
+previous smoke build, the build-mode stamp recompiles the affected objects.
+No change to `flash.bat` is required for this default-build correction.
+
+## Optional repository flashing wrapper (Windows / Git Bash)
+
+If you retained the repository's guarded wrapper rather than the original simple
+batch file, use `./flash.bat app` for your app: that wrapper explicitly selects a
+mode and therefore overrides the makefile default. It was not modified by the
+application-default fix.
 
 Connect the same J-Link/SWD hardware used for the original watch project. From
 this project's `gcc` directory, run:
