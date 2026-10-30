@@ -1,0 +1,4 @@
+gcc/bin*/
+*.o
+*.d
+__pycache__/
