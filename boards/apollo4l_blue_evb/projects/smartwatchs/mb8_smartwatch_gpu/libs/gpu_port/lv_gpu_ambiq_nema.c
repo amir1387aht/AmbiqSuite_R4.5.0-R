@@ -43,7 +43,6 @@
 //
 //*****************************************************************************
 #include "lvgl.h"
-#include "watch_gpu.h"
 #include "lv_gpu_ambiq_nema.h"
 
 #include "am_mcu_apollo.h"
@@ -276,7 +275,6 @@ static void watch_wait_cl(nema_cmdlist_t *cl)
         LV_LOG_ERROR("GPU command-list wait failed; refusing to flush stale pixels");
         for (;;) { /* Inspect GPU IRQ 28 / error status with the debugger. */ }
     }
-    ++watch_gpu_completed_waits;
 }
 
 static bool watch_gpu_accessible(const void *ptr)
@@ -586,7 +584,6 @@ static void lv_gpu_ambiq_nema_cl_submit_link(nema_cmdlist_t* cl)
 {
     //Start GPU, submit CL
     nema_cl_submit(cl);
-    ++watch_gpu_submissions;
 
 #ifdef LV_GPU_AMBIQ_DEBUG_CL
     watch_wait_cl(cl);

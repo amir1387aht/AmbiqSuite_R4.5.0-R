@@ -27,7 +27,7 @@ assert app == expected, (expected - app, app - expected)
 assert '../src/main.c' in app and '../src/rtos.c' in app
 sdk = R / 'third_party/LVGL/lvgl/src'
 skip = {'misc/lv_mem.c', 'misc/lv_tlsf.c', 'gpu/lv_gpu_ambiq_nema.c'}
-skip |= {f'font/lv_font_montserrat_{size}.c' for size in [14, 20, 28, 44, 48]}
+skip |= {'font/' + f.name for f in (P/'libs/gpu_port').glob('lv_font_montserrat_*.c')}
 expected_lvgl = {'../../../../../../third_party/LVGL/lvgl/src/' + f.relative_to(sdk).as_posix()
                  for f in sdk.rglob('*.c') if f.relative_to(sdk).as_posix() not in skip}
 assert set(rows['LVGL'].split()) == expected_lvgl

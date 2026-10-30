@@ -1,19 +1,21 @@
 from pathlib import Path
-import subprocess, struct, re, json, hashlib, os
+import subprocess, struct, re, json, hashlib, os, sys
 P=Path(__file__).resolve().parents[1]; R=P.parents[4]
 import shutil
 nm_path=shutil.which('arm-none-eabi-nm')
 assert nm_path, 'Put arm-none-eabi-nm on PATH'
 T=Path(nm_path).parent
 results={}
-for mode in ['smoke','app']:
- d=P/f'gcc/bin-{mode}'; elf=d/'mb8_smartwatch_gpu.axf'; binary=d/'mb8_smartwatch_gpu.bin'
+for mode in [sys.argv[1] if len(sys.argv) > 1 else 'bin']:
+ d=P/'gcc'/mode; elf=d/'mb8_smartwatch_gpu.axf'; binary=d/'mb8_smartwatch_gpu.bin'
  assert elf.exists() and binary.exists(),mode
  undefined=subprocess.check_output([str(T/'arm-none-eabi-nm'),'-u',str(elf)],text=True)
  assert not undefined.strip(),undefined
  nm=subprocess.check_output([str(T/'arm-none-eabi-nm'),'-n',str(elf)],text=True)
  symbols={m[2]:int(m[1],16) for line in nm.splitlines() if (m:=re.match(r'([0-9a-fA-F]+)\s+\w\s+(\S+)',line))}
  data=binary.read_bytes(); sp,reset=struct.unpack_from('<II',data)
+ assert b'%u FPS\n%u%% CPU' in data, 'Original LVGL FPS/CPU monitor missing from linked image'
+ assert not any(name.startswith(('watch_gpu_' + 'smoke', 'watch_gpu_submissions', 'watch_gpu_completed_waits', 'watch_panel_flushes')) for name in symbols)
  assert 0x10060000<=sp<0x100e0000 and sp%8==0
  assert reset&1 and (reset&~1)==symbols['Reset_Handler']
  gpu_vector=struct.unpack_from('<I',data,(16+28)*4)[0]
@@ -29,4 +31,4 @@ for mode in ['smoke','app']:
  assert all('../libs/lvgl' not in f.read_text() for f in depfiles)
  results[mode]={'binary_bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'stack_pointer':hex(sp),'reset_vector':hex(reset),'gpu_irq28_vector':hex(gpu_vector),'compiled_units':len(list((d/'obj').rglob('*.o'))),'unresolved_symbols':0}
  print('PASS:',mode,json.dumps(results[mode]))
-print('PASS: both linked firmware images validated (not a hardware test)')
+print('PASS: linked application firmware validated (not a hardware test)')

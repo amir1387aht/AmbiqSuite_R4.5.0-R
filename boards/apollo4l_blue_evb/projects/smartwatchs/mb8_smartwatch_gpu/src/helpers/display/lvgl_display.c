@@ -48,11 +48,7 @@ void lvgl_display_init(void* pvParameters) {
     lv_log_register_print_cb(lvgl_log_cb);
 #endif
 
-#if WATCH_GPU_SMOKE_TEST
-    watch_gpu_smoke_screen();
-#else
     screen_menu_create();
-#endif
     display_awake = true;
     //ui_init();
 
@@ -112,7 +108,6 @@ void disp_flush(lv_disp_drv_t* display, const lv_area_t* area, lv_color_t * px_m
 
 void disp_flush_done(void *context) {
     (void)context;
-    ++watch_panel_flushes;
     lv_disp_flush_ready(&disp_drv);
 }
 

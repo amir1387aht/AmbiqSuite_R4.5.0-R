@@ -12,10 +12,8 @@ void run_tasks(void)
     configASSERT(xTaskCreate(wdt_init, "WDT Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_SUPER_HIGH, &xWDTTask) == pdPASS);
     // TODO: Create ble task with TASK_PRIORITY_HIGH priority
     configASSERT(xTaskCreate(lvgl_display_init, "Lvgl Task", 4096, 0, TASK_PRIORITY_MEDIUM, &xLvglTask) == pdPASS);
-#if !WATCH_GPU_SMOKE_TEST
     configASSERT(xTaskCreate(lightSens_task, "LightSensor Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_IDLE, &xLightSensTask) == pdPASS);
     configASSERT(xTaskCreate(acclSens_task, "AcclSensor Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_IDLE, &xAcclSensTask) == pdPASS);
-#endif
     vTaskStartScheduler();
 }
 

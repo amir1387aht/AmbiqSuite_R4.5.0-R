@@ -47,10 +47,8 @@ void mcu_init(void* pvParameters)
 
     /* Nema custom allocators must be initialized before any DMA client. */
     watch_gpu_init();
-#if !WATCH_GPU_SMOKE_TEST
     lightSens_init();
     acclSens_init();
-#endif
 
     vTaskDelete(NULL);
 }

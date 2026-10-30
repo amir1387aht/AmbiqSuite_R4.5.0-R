@@ -8,8 +8,6 @@ CC := $(TOOLCHAIN)-gcc
 OBJCOPY := $(TOOLCHAIN)-objcopy
 SIZE := $(TOOLCHAIN)-size
 JOBS ?= 8
-# Preserve the original watch app/menu by default; diagnostics are opt-in.
-GPU_SMOKE_TEST ?= 0
 SHELL := /bin/bash
 
 LVGL_DIR := $(ROOT_DIR)/third_party/LVGL/lvgl
@@ -34,7 +32,8 @@ $(error SDK LVGL source discovery failed: expected $(LVGL_DIR)/src/core/lv_obj.c
 endif
 # These project-local copies only change no-PSRAM allocation and font fallback.
 LVGL_SRC := $(filter-out $(LVGL_DIR)/src/misc/lv_mem.c $(LVGL_DIR)/src/misc/lv_tlsf.c $(LVGL_DIR)/src/gpu/lv_gpu_ambiq_nema.c,$(LVGL_SRC))
-LVGL_SRC := $(filter-out $(addprefix $(LVGL_DIR)/src/font/,lv_font_montserrat_14.c lv_font_montserrat_20.c lv_font_montserrat_28.c lv_font_montserrat_44.c lv_font_montserrat_48.c),$(LVGL_SRC))
+FONT_OVERRIDES := $(notdir $(wildcard ../libs/gpu_port/lv_font_montserrat_*.c))
+LVGL_SRC := $(filter-out $(addprefix $(LVGL_DIR)/src/font/,$(FONT_OVERRIDES)),$(LVGL_SRC))
 PORT_SRC := $(wildcard ../libs/gpu_port/*.c)
 AMBIQ_SRC := $(addprefix $(AMBIQ_DIR)/,lv_ambiq_nema_hal.c lv_ambiq_misc.c lv_ambiq_font_align.c lv_ambiq_decoder.c)
 NEMA_SRC := $(addprefix $(NEMA_PLATFORM_DIR)/,nema_hal.c nema_event.c nema_utils.c)
@@ -52,7 +51,7 @@ INCLUDE_DIRS += $(LVGL_DIR) $(LVGL_DIR)/src $(LVGL_DIR)/src/misc $(LVGL_DIR)/src
 INCLUDE_DIRS += $(NEMA_DIR)/NemaGFX_SDK/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/common/mem $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaDC $(NEMA_DIR)/NemaGFX_SDK/include/tsi/common $(NEMA_PLATFORM_DIR)
 INCLUDE_DIRS += $(APP_DIRS)
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
-CPPFLAGS += -DWATCH_GPU_SMOKE_TEST=$(GPU_SMOKE_TEST) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
+CPPFLAGS += -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
 ARCH := -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
 CFLAGS := $(ARCH) -std=gnu11 -O2 -g3 -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -MMD -MP
 LDFLAGS := $(ARCH) -nostartfiles -static -Tlinker_script.ld -Wl,--gc-sections,--entry,Reset_Handler,-Map,$(CONFIG)/$(TARGET).map,--print-memory-usage
@@ -61,12 +60,7 @@ BSP_LIB := ../../../../bsp/gcc/bin/libam_bsp.a
 GPU_LIB ?= $(AMBIQ_DIR)/gpu_lib_apollo4/gcc/bin/lvgl_ambiq_porting.a
 NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 
-.PHONY: all objects clean check-libs FORCE
-FORCE:
-$(CONFIG)/.build-mode: FORCE
-	@mkdir -p $(CONFIG)
-	@printf '%s\n' "$(GPU_SMOKE_TEST)" > $@.tmp
-	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+.PHONY: all objects clean check-libs
 
 all: $(CONFIG)/$(TARGET).bin
 objects: $(OBJS)
@@ -74,7 +68,7 @@ check-libs:
 	@missing=0; for lib in "$(GPU_LIB)" "$(NEMA_LIB)"; do if [ ! -f "$$lib" ]; then echo "Missing vendor GPU library: $$lib" >&2; missing=1; fi; done; [ $$missing -eq 0 ] || { echo "Restore these from the licensed AmbiqSuite R4.5.0 package (see README_GPU.md). No stubs are used." >&2; exit 1; }
 
 define compile_rule
-$(call obj,$(1)): $(1) Makefile $(CONFIG)/.build-mode
+$(call obj,$(1)): $(1) Makefile
 	@mkdir -p $$(@D)
 	$$(CC) $$(CPPFLAGS) $$(CFLAGS) -c $$< -o $$@
 endef

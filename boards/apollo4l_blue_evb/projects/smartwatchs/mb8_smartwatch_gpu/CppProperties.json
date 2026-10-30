@@ -8,7 +8,10 @@
         "${workspaceRoot}/../../../../../third_party/LVGL/lvgl",
         "${workspaceRoot}/../../../../../third_party/LVGL/ambiq_support"
       ],
-      "defines": ["AM_PART_APOLLO4L", "LV_CONF_INCLUDE_SIMPLE", "WATCH_GPU_SMOKE_TEST=1"]
+      "defines": [
+        "AM_PART_APOLLO4L",
+        "LV_CONF_INCLUDE_SIMPLE"
+      ]
     }
   ]
 }
