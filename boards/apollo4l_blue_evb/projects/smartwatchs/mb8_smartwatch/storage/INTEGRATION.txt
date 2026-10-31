@@ -2,6 +2,7 @@ MI BAND 8 NAND / YAFFS2 DIRECT PORT: MSPI 1-1-4 QUAD
 ================================
 Status: opt-in software port, NOT a validated on-watch storage driver.
 No startup calls, automatic format, guessed pins, or default partition are added.
+Pin defaults now follow the published ATC map; all confirmation guards stay off.
 Default WATCH_NAND_YAFFS2=0 leaves the existing watch pipeline unchanged.
 Do not flash a storage-enabled build as proof that its wiring is correct.
 
@@ -62,20 +63,31 @@ DS35X1GBXXX rev07 (2026-07-15), DS35M1GB-IB (WSON8x6):
 SAFE ENABLE PROCEDURE
 1. Keep the branch isolated and back up any existing watch NAND data externally.
    Reconcile YAFFS licensing BEFORE distributing enabled firmware.
-2. Edit ONLY storage/mb8_nand_board.h for board choices: verify1.8V VCC and
-   Apollo pad I/O voltage compatibility, a dedicated UNUSED MSPI0 or2, hardware
-   CS channel0/1, SCK, IO0/MOSI, IO1/MISO, IO2, IO3, CS numbers AND peripheral
-   selectors. All remain UNKNOWN. Verify pull-ups on IO2/3, NOT hard ties to VCC
-   (these become quad data lanes). Standard SCK is MSPI lane8; CLKOND4 selects
-   alternate lane4 only after routing verification. Driver checks the SDK's actual
-   per-pad function matrix and NCE source BEFORE any GPIO/controller activity.
-   MSPI1 and known display/power/reset pads11,37..45,86 are forbidden. The active
-   display uses MSPI1, CE0=86,SCK45,D0..3=37..40. Do not use reset/power aliases
-   41/42 as display CS/SCK. No BSP EVB pin assignment is guessed. If watch NAND
-   wiring cannot route all six signals to the SAME spare MSPI instance, this
-   hardware cannot use this quad backend without rewiring; pin edits cannot
-   change the silicon mux. Legacy IOM mode instead needs dedicated IOM pins and
-   WP#/HOLD# held high. Do not hard-tie lanes for the quad mode.
+2. Board defaults in storage/mb8_nand_board.h follow the reversed pin map:
+   https://github.com/atc1441/ATCmiBand8fw/blob/931216a15337fa371f3a7d2de6dfb216a90093a4/Pinout_MiBand8.ods
+   The same commit's README explicitly identifies that spreadsheet as the
+   reversed Mi Band8 pinout. Tabelle1, rows59..62,67,70:
+     IO0 / MOSI    GPIO74  function0 = MSPI2_0
+     IO1 / MISO    GPIO75  function0 = MSPI2_1
+     IO2 / WP#     GPIO76  function0 = MSPI2_2
+     IO3 / HOLD#   GPIO77  function0 = MSPI2_3
+     SCK           GPIO82  function0 = MSPI2_8 (standard SCK)
+     CS#           GPIO85  function7 = NCE85
+   Verified against THIS Apollo4l SDK am_hal_pin_fn_list/am_hal_pin.h, not EVB
+   reset aliases. CE0 is our software choice: NCE85 NCESRC=36 selects MSPI2CEN0,
+   active low; the upstream sheet identifies CS pad85 but not a CE channel.
+   CMSIS pad85 supports both MSPI2CEN0=36 and MSPI2CEN1=37. This dedicated
+   MSPI2 route does not conflict with display MSPI1 or its reserved pads.
+   Driver still checks the actual SDK pad matrix/NCE BEFORE hardware activity.
+   The sheet has no variant/revision annotation for these flash rows, no chip
+   model, voltage, pull-up values or timing proof. This is REVERSE-ENGINEERED
+   SOURCE EVIDENCE, not confirmation every Band8 variant shares the routing.
+   Check actual watch continuity and1.8V/pad voltage compatibility; keep
+   PINOUT_CONFIRMED,1V8_CONFIRMED,PART_GEOMETRY_CONFIRMED zero until checked.
+   Check IO2/3 pull-ups (NOT hard ties to VCC) before confirming quad readiness.
+   MSPI1 and known display/power/reset pads11,37..45,86 remain forbidden.
+   Legacy IOM mode is NOT configured by this pin map: IOM remains UNKNOWN,
+   does not silently fall back, and needs its own independently verified route.
 3. Confirm chip marking/revision, geometry, and the independently backed-up,
    block-aligned YAFFS partition boundaries. Set FIRST_BLOCK and BLOCK_COUNT
    explicitly; no whole-chip default exists. Existing Xiaomi filesystems are NOT
@@ -159,7 +171,8 @@ PERFORMANCE / RESOURCE CHOICES
 - No measured bandwidth, actual DMA/pad behavior or power-fail endurance claim.
   Quad wire payload ceiling at48MHz is24MB/s before commands, array latency,
   cache copies, polling, YAFFS metadata/GC and ECC; NOT a measured file rate.
-  Unknown physical routing remains a hardware blocker, not production readiness.
+  Published routing is mux-compatible; actual-watch continuity/electrical validation
+  remains a hardware prerequisite, not production readiness.
 
 LICENSE / SOURCE
 Official YAFFS2 Direct snapshot474b3acb927d27b2305618aaf24456b9d33fe91b:
@@ -206,3 +219,17 @@ VALIDATION OF THIS SOURCE SNAPSHOT (NO ON-DEVICE TESTING)
   zero live after unmount. NOT an ARM runtime heap/whole-chip RAM/timing result.
 - Tests/harnesses and build outputs deliberately stay outside git; no tests
   directories, generated firmware binaries or extra markdown are published.
+
+SOURCE-BASED PIN UPDATE VALIDATION
+- The pin map changes only board defaults and this existing guide. Electrical,
+  geometry, partition, write and max-clock confirmations remain zero; no
+  startup accesses or autoformat are added. CLOCK_HZ remains12MHz.
+- External ASan/UBSan tests use the actual SDK pin table/header and extracted
+  real backend validation/guard code: all six sourced pin/function pairs pass
+  on MSPI2; wrong controller, selector, duplicate/swapped lane, display pad,
+  alternate-clock mismatch, invalid CS/channel, unsupported clock and missing
+  confirmation cases fail before hardware activity. CE0/1 NCE encodings and
+  active-low configuration are checked against actual CMSIS/header values.
+- Real ARM GCC14.2.1 quad/default builds are rerun for this update. Earlier
+  transport/protocol fault results above belong to the prior implementation;
+  no hardware tests or new throughput measurements are implied by pin mapping.
