@@ -9,6 +9,10 @@ OBJCOPY := $(TOOLCHAIN)-objcopy
 SIZE := $(TOOLCHAIN)-size
 JOBS ?= 8
 GPU_PROFILE ?= 0
+WATCH_NAND_YAFFS2 ?= 0
+ifneq ($(filter $(WATCH_NAND_YAFFS2),0 1),$(WATCH_NAND_YAFFS2))
+$(error WATCH_NAND_YAFFS2 must be 0 or 1)
+endif
 # GPU_CONVERT remains an accepted alias for existing flash commands.
 GPU_COPY ?= $(if $(GPU_CONVERT),$(GPU_CONVERT),1)
 ifneq ($(filter $(GPU_COPY),0 1),$(GPU_COPY))
@@ -56,6 +60,11 @@ FREERTOS_DIR := $(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source
 RTOS_SRC := $(addprefix $(FREERTOS_DIR)/,queue.c tasks.c timers.c list.c event_groups.c)
 RTOS_SRC += $(FREERTOS_DIR)/portable/GCC/AMapollo4/port.c $(FREERTOS_DIR)/portable/MemMang/heap_4.c
 SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(AMBIQ_SRC) $(NEMA_SRC) $(UTIL_SRC) $(RTOS_SRC) startup_gcc.c
+# Additive storage port: no startup calls and no LVGL/display dependencies.
+ifeq ($(WATCH_NAND_YAFFS2),1)
+NAND_SRC := $(wildcard ../storage/*.c ../storage/yaffs2/*.c)
+SRC += $(NAND_SRC)
+endif
 # Strip leading ../ segments rather than allowing paths to escape CONFIG.
 obj = $(CONFIG)/obj/$(subst ../,,$(1:.c=.o))
 OBJS := $(foreach s,$(SRC),$(call obj,$(s)))
@@ -63,12 +72,24 @@ OBJS := $(foreach s,$(SRC),$(call obj,$(s)))
 INCLUDE_DIRS := ../src ../libs/gpu_port $(ROOT_DIR) $(ROOT_DIR)/CMSIS/AmbiqMicro/Include $(ROOT_DIR)/CMSIS/ARM/Include ../../../../bsp $(ROOT_DIR)/devices $(ROOT_DIR)/utils $(ROOT_DIR)/mcu/apollo4l $(ROOT_DIR)/mcu/apollo4l/hal $(ROOT_DIR)/mcu/apollo4l/hal/mcu $(FREERTOS_DIR)/include $(FREERTOS_DIR)/portable/GCC/AMapollo4
 INCLUDE_DIRS += $(LVGL_DIR) $(LVGL_DIR)/src $(LVGL_DIR)/src/misc $(LVGL_DIR)/src/gpu $(AMBIQ_DIR)
 INCLUDE_DIRS += $(NEMA_DIR)/NemaGFX_SDK/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/common/mem $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaDC $(NEMA_DIR)/NemaGFX_SDK/include/tsi/common $(NEMA_PLATFORM_DIR)
-INCLUDE_DIRS += $(APP_DIRS)
+INCLUDE_DIRS += $(APP_DIRS) ../storage
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
 CPPFLAGS += -DWATCH_NATIVE_RGB565=1 -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_COPY=$(GPU_COPY) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
+CPPFLAGS += -DWATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2)
+ifeq ($(WATCH_NAND_YAFFS2),1)
+CPPFLAGS += -I../storage/yaffs2 -DCONFIG_YAFFS_DIRECT -DCONFIG_YAFFS_YAFFS2
+CPPFLAGS += -DCONFIG_YAFFS_DEFINES_TYPES -DCONFIG_YAFFS_PROVIDE_DEFS -DCONFIG_YAFFSFS_PROVIDE_VALUES
+CPPFLAGS += -DCONFIG_YAFFS_SMALL_RAM -DCONFIG_YAFFS_SHORT_NAMES_IN_RAM -DCONFIG_YAFFS_USE_32_BIT_TIME_T
+CPPFLAGS += -DCONFIG_YAFFS_NO_TRACE -D'Y_LOFF_T=long long'
+endif
 ARCH := -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
 CFLAGS := $(ARCH) -std=gnu11 -O2 -g3 -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -MMD -MP
 LDFLAGS := $(ARCH) -nostartfiles -static -Tlinker_script.ld -Wl,--gc-sections,--entry,Reset_Handler,-Map,$(CONFIG)/$(TARGET).map,--print-memory-usage
+ifeq ($(WATCH_NAND_YAFFS2),1)
+# Keep opt-in public entry points link-checked without adding startup activity.
+LDFLAGS += -Wl,--undefined=mb8_storage_mount,--undefined=mb8_storage_unmount
+LDFLAGS += -Wl,--undefined=yaffs_open,--undefined=yaffs_read,--undefined=yaffs_write,--undefined=yaffs_fsync,--undefined=yaffs_close
+endif
 HAL_LIB := $(ROOT_DIR)/mcu/apollo4l/hal/mcu/gcc/bin/libam_hal.a
 BSP_LIB := ../../../../bsp/gcc/bin/libam_bsp.a
 NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
@@ -77,7 +98,7 @@ NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 FORCE:
 $(CONFIG)/.compiler-flags: FORCE
 	@mkdir -p $(CONFIG)
-	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) CFLAGS=$(CFLAGS)' > $@.tmp
+	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) CFLAGS=$(CFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 

@@ -1,0 +1,9 @@
+YAFFS2 Direct, Aleph One Ltd.
+https://github.com/Aleph-One-Ltd/yaffs2
+Commit: 474b3acb927d27b2305618aaf24456b9d33fe91b
+Core sources transformed exactly as direct/handle_common.sh copy.
+Headers and source notices retained. See LICENSE: GPLv2/commercial; headers LGPLv2.1.
+No claim that the complete Ambiq/Nema-linked firmware is GPL-distributable.
+Obtain a commercial YAFFS license or resolve all distribution-license compatibility before shipping.
+Local environment edit: ydirectenv.h includes sys/types.h for newlib mode_t/dev_t.
+Local correctness fix: yaffs_packedtags2.c uses unsigned 0x0fu before shift by28, removing signed-shift UB reported by UBSan; on-media representation unchanged.

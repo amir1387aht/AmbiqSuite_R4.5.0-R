@@ -1,0 +1,168 @@
+MI BAND 8 NAND / YAFFS2 DIRECT PORT
+================================
+Status: opt-in software port, NOT a validated on-watch storage driver.
+No startup calls, automatic format, guessed pins, or default partition are added.
+Default WATCH_NAND_YAFFS2=0 leaves the existing watch pipeline unchanged.
+Do not flash a storage-enabled build as proof that its wiring is correct.
+
+PART IDENTIFICATION / EVIDENCE
+52audio, 2024-04-15:
+https://www.52audio.com/archives/196000.html
+The Disney 100th-anniversary Band 8, model M2240B1, includes an NFC chip and
+Dosilicon DS35M1GB-IB. This is evidence for that non-Pro Band 8 sample, NOT proof
+that every regular/non-NFC/Active/region/revision has the same BOM. Band 8 Pro
+uses a different 2Gb part; do not substitute its geometry. Inspect this watch's
+marking and confirm its actual device identity before enabling storage.
+The teardown's text says "1GB"; Dosilicon specifies 1Gb = 128MiB MAIN data,
+not 1 gigabyte. OOB is additional, not filesystem payload capacity.
+
+Original manufacturer product table and current datasheet:
+https://www.dosilicon.com/SPI-NAND-Flash.html
+https://www.dosilicon.com/resources/SPI%20NAND/DS35X1GBXXX_rev07.pdf
+DS35X1GBXXX rev07 (2026-07-15), DS35M1GB-IB (WSON8x6):
+- SPI x1/x2/x4 NAND, NOT parallel NAND, not byte-addressable SPI NOR.
+- VCC 1.7..1.95V, -40..85C, maximum serial clock 83MHz for 1.8V part.
+- ID command 9Fh + dummy byte -> E5h A1h (3.3V Q part is E5h F1h).
+  Matching ID is necessary, not sufficient to identify all silicon revisions.
+- 1024 eraseblocks, 64 pages/block, 2048 main +128 OOB bytes/page.
+  Main eraseblock=128KiB, main total=128MiB. Geometry must be confirmed on device.
+- ECC8 per512B; B0h bit4 enabled. C0h bits6:4: 000 clean, 001 corrected1..3,
+  011 corrected4..6, 101 corrected7..8, 010 uncorrectable; reserved codes rejected.
+- OOB[0] (column800h) is BBM; inspect FIRST TWO pages of each block before erase.
+  User spare OOB[0..63]; OOB[64..127] internal parity must never hold YAFFS tags.
+  Main+user-spare regions are ECC protected; table3.7 reserves BBM without an
+  unambiguous ECC-coverage exception. BBM is read RAW with ECC temporarily off,
+  then ECC is restored/read-verified, so correction cannot conceal a marker.
+- YAFFS packed tags including YAFFS tag ECC occupy OOB[4..31] (28 bytes on this
+  ABI). Physical mapping is custom and NOT interchangeable with a stock image.
+  Driver accepts <=60 tag bytes without reaching the internal-parity area.
+- Whole-page program loads2048+64 bytes in one command, followed by one execute;
+  never separately programs tags in an ECC segment. Marker writes disable ECC
+  temporarily, update only OOB[0], then restore and verify B0h.
+- Commands used: FF reset; 0F/1F get/set feature; 06 WREN;13 page-to-cache;
+  03 cache read with2-byte column+dummy;02 program load;10 execute;D8 erase.
+  QE B0[0] is off in this x1 backend. Part also supports6B quad cache read,
+  32 quad program load,34 quad random program (NOT implemented by IOM backend).
+- Datasheet maxima: ECC read130us, program700us, erase10ms, reset during erase
+  500us; power-up wait5ms; CS deselect>=100ns. Driver margins: read/reset2ms,
+  program5ms, erase20ms, and 1us between SPI transfers. Poll iteration limits
+  exclude bus-call/preemption overhead; these are not hard RTOS latency guarantees.
+
+SAFE ENABLE PROCEDURE
+1. Keep the branch isolated and back up any existing watch NAND data externally.
+   Reconcile YAFFS licensing BEFORE distributing enabled firmware.
+2. Edit ONLY storage/mb8_nand_board.h for the board choices: verify 1.8V VCC and
+   Apollo pad I/O voltage compatibility, IOM instance, hardware CS channel,
+   SCK/MOSI/MISO/CS pin numbers AND correct peripheral function selectors.
+   Confirm WP#/HOLD# held HIGH externally. Do not infer wiring from EVB pins.
+   Select an UNUSED, DEDICATED IOM: the driver does not share a sensor/display bus.
+   A pin that only supports MSPI cannot be made into IOM by changing a number.
+3. Confirm chip marking/revision, geometry, and the independently backed-up,
+   block-aligned YAFFS partition boundaries. Set FIRST_BLOCK and BLOCK_COUNT
+   explicitly; no whole-chip default exists. Existing Xiaomi filesystems are NOT
+   assumed YAFFS. This port will not import/convert/format a factory partition.
+   At least16 blocks are required by this configuration;5 blocks are reserved
+   for GC, and YAFFS also dynamically reserves checkpoint space.
+4. Set the corresponding *_CONFIRMED flags only after those checks. Leave
+   WRITES_AUTHORIZED=0. Start with12MHz; scope timings and verify signal integrity
+   before selecting24/48MHz. 48MHz is this IOM's maximum, not a measured result.
+5. Build from project/gcc, e.g.:
+   PATH=/path/to/arm-gcc/bin:$PATH make -j6 WATCH_NAND_YAFFS2=1 CONFIG=bin-nand
+   Makefile keeps mount/unmount/open/read/write/fsync/close link-checked even though
+   they are not called from startup. Do not use bin-nand on hardware yet.
+6. Integrate an explicit call from ONE dedicated low-priority FreeRTOS storage
+   worker after scheduler start: mb8_storage_mount(true). Print/check its return
+   and mb8_storage_status(). It probes E5 A1 BEFORE permitting any writes.
+   No ISR, LVGL/render task, timer daemon, or pre-scheduler calls are supported.
+   Queue file requests from other tasks to this worker. YAFFS Direct has a mutex;
+   the single-worker rule additionally protects its global last-error state.
+7. When physical validation and partition provisioning are complete, explicitly
+   set WRITES_AUTHORIZED=1 and call mb8_storage_mount(false) after unmounting.
+   It first scans/read-checkpoints READ ONLY, rejects ANY observed scan error,
+   then unlocks volatile NAND block protection and remounts read-write.
+   BRWD/OTP locking is never overridden. Every read/program/erase/mark callback
+   independently enforces the selected partition. No erase or format is implied
+   by mount; formatting/provisioning must be a separately authorized operation.
+8. File API (all in the same worker, check every return value):
+   #include "mb8_storage.h"
+   #include "yaffsfs.h"
+   if (mb8_storage_mount(true)==0) {
+       int fd=yaffs_open("/nand/assets.bin", O_RDONLY, 0);
+       if (fd>=0) { /* yaffs_read(fd,buf,len); */ yaffs_close(fd); }
+       mb8_storage_unmount();
+   }
+   Writable mounts use yaffs_open(...,O_CREAT|O_RDWR,0600), yaffs_write and
+   yaffs_fsync before acknowledging durability, then yaffs_close. Normal unmount
+   saves a checkpoint. No fsync can guarantee survival of arbitrary hardware
+   power faults beyond the NAND's specified behavior; validate on the real watch.
+9. Resolve gcc/Makefile additions manually when merging with the LVGL8.4 branch.
+   Storage includes no LVGL headers/types and changes no UI, allocator, panel,
+   startup, profiler, fonts, or FPS files. This branch is based on main d6786d9.
+
+PERFORMANCE / RESOURCE CHOICES
+- Dedicated IOM x1 SPI DMA with shared-SRAM,32-byte-aligned CQ/data buffers.
+  Foreground polls HAL CQ completion without replacing any ISR. The RTOS can
+  preempt the worker. It is not asynchronous application I/O, and repeated page
+  calls consume worker CPU. Small status commands also use bounded CQ execution.
+- Explicit DAXI flush before submit; HAL callback invalidates after DMA. Caller
+  buffers can be unaligned/in TCM; two bounded SRAM copies avoid DMA to unsafe
+  user memory. Further zero-copy optimization requires proving memory ownership.
+- Full data+tags read uses one cache transfer; tag-only scans fetch just tags.
+  Good/bad-block bitmap cache avoids redundant BBM reads on each write/erase.
+- Four short-operation cache pages, aligned-write cache bypass, checkpoint
+  restore/save and YAFFS summary support retained. NAND ECC, YAFFS tag ECC,
+  bad-block handling, verification/retry logic, and normal GC are not stripped.
+- File full-scan time and dynamic RAM scale with partition and object count.
+  YAFFS requested-allocation budget96KiB (allocator headers extra),256-object cap,
+ 10 file handles/2 directory-search contexts with CONFIG_YAFFS_SMALL_RAM; buffers/RTOS lock
+  are additional. yaffsfs_get_malloc_values reports current/peak YAFFS requests.
+  A larger partition/directory tree can fail mount gracefully under this budget.
+  Raise it only after measuring remaining UI heap. No new independent sbrk heap.
+- Bus transaction timeout10ms, conservative NAND operation bounds above. An
+  ambiguous bus/program timeout is never automatically replayed. On bus fault,
+  stop CQ/DMA/submodule, power-gate the dedicated IOM, retain static buffers,
+  poison the transport, and REQUIRE FIRMWARE RESET before reopening. Do not
+  power-cycle/retry into a potentially incomplete write without recovery review.
+- No measured bandwidth, actual DMA/pad behavior, or power-fail endurance claim.
+  MSPI quad can improve wire bandwidth but needs a verified spare MSPI controller,
+  routable pins, voltage/timing validation and a real backend. It is not silently
+  enabled, and96MHz is above this part's83MHz limit. This is not a claim of
+  maximum possible chip bandwidth or production readiness.
+
+LICENSE / SOURCE
+Official YAFFS2 Direct snapshot474b3acb927d27b2305618aaf24456b9d33fe91b:
+https://github.com/Aleph-One-Ltd/yaffs2
+https://github.com/Aleph-One-Ltd/yaffs2/blob/474b3acb927d27b2305618aaf24456b9d33fe91b/LICENSE
+Upstream notices and LICENSE retained under storage/yaffs2. Core transformed by
+upstream Direct substitutions. Local changes are listed in UPSTREAM.txt: newlib
+sys/types include, and unsigned tag-type mask eliminating signed-shift UB without
+changing media format. Integration source is GPL-2.0-only; do not call YAFFS MIT.
+YAFFS implementation is GPLv2 or available from Aleph One under commercial terms;
+upstream headers carry LGPL2.1 notices. Distributing a linked firmware requires
+GPL-compatible obligations for the combined work OR an applicable commercial
+YAFFS license, plus the Ambiq/Nema vendor licenses. Public source hosting alone
+DOES NOT establish compatibility of those vendor components. No firmware binary
+or legal compatibility warranty is included in the source commit.
+
+VALIDATION OF THIS SOURCE SNAPSHOT (NO ON-DEVICE TESTING)
+- ARM GCC14.2.1, -O2 hard-float Cortex-M4; both WATCH_NAND_YAFFS2=0 and1
+  fully compile/link with the real repository Apollo4l HAL/BSP and licensed
+  lib_nema_apollo4l_nemagfx.a; no firmware stubs. Existing SDK/app warnings remain.
+- Opt-in link has all mount/unmount/open/read/write/fsync/close entry points kept.
+  Main image text+data460224B vs412672B default (+47552B); static shared-SRAM
+  reservation+10912B, TCM data+16B. Linker reserves the remaining RAM for app heaps,
+  so its100% RAM-region summary is NOT100% live/static allocation.
+- External host-only ASan+UBSan NAND protocol suite: bounds/OOB isolation,
+  read-only guard, JEDEC mismatch, all ECC codes, factory second-page marker,
+  program/erase failure bits, runtime marking, bounded busy timeout, torn page.
+- Actual upstream YAFFS+adapter tested on external mock NAND: RO no writes,
+  RW files/fsync/checkpoint/remount, factory-bad-block skip, simulated process
+  death during a torn NAND page program, recovery of previously synced file,
+  scan-error refusal, and partition-boundary isolation. No sanitizer findings
+  remain after the documented unsigned-mask correction.
+- Default unconfirmed-board mount test confirms ZERO bus calls or media writes.
+- Host16-block fixture's peak YAFFS requested allocation49752B (host ABI), zero
+  live allocation after unmount. This is NOT an ARM runtime heap measurement,
+  whole-chip RAM estimate, timing result, or a hardware power-cut qualification.
+- Tests/harnesses and build outputs deliberately remain outside the git patch;
+  no tests directories or generated firmware binaries are published.
