@@ -7,12 +7,10 @@
 #include <errno.h>
 #include <limits.h>
 
-#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "task.h"
 static SemaphoreHandle_t uart_tx_lock;
-#endif
 
 void *phUART;
 uint8_t g_pui8TxBuffer[256];
@@ -50,11 +48,9 @@ int uart_write_bytes(const char *text, size_t length)
 {
     if (!length) return 0;
     if (!text || !phUART || length > INT_MAX) { errno = EINVAL; return -1; }
-#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
     bool locked = uart_tx_lock && __get_IPSR() == 0 &&
                   xTaskGetSchedulerState() == taskSCHEDULER_RUNNING;
     if (locked && xSemaphoreTake(uart_tx_lock, portMAX_DELAY) != pdTRUE) return -1;
-#endif
     uint32_t written = 0;
     const am_hal_uart_transfer_t transfer = {
         .eType = AM_HAL_UART_BLOCKING_WRITE, .pui8Data = (uint8_t *)text,
@@ -62,9 +58,7 @@ int uart_write_bytes(const char *text, size_t length)
         .ui32TimeoutMs = 100, .pfnCallback = NULL, .pvContext = NULL, .ui32ErrorStatus = 0
     };
     uint32_t status = am_hal_uart_transfer(phUART, &transfer);
-#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
     if (locked) xSemaphoreGive(uart_tx_lock);
-#endif
     if (status != AM_HAL_STATUS_SUCCESS && !written) { errno = EIO; return -1; }
     return (int)written;
 }
@@ -77,13 +71,12 @@ void uart_print(char *text)
     }
 }
 
-#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
-bool uart_profile_write(const char *text, size_t length)
+bool uart_log_write(const char *text, size_t length)
 {
     if (!uart_tx_lock || !text || length == 0) return false;
     if (xSemaphoreTake(uart_tx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
     uint32_t written = 0;
-    /* This runs only on the lower-priority logger. Allow graphics to preempt
+    /* This runs only on lower-priority loggers. Allow graphics to preempt
      * it while UART drains. A failed diagnostic write must not hang the UI. */
     const am_hal_uart_transfer_t transfer = {
         .eType = AM_HAL_UART_BLOCKING_WRITE,
@@ -95,7 +88,6 @@ bool uart_profile_write(const char *text, size_t length)
     xSemaphoreGive(uart_tx_lock);
     return status == AM_HAL_STATUS_SUCCESS && written == length;
 }
-#endif
 
 am_hal_gpio_pincfg_t g_AM_GPIO_COM_UART_TX =
 {
@@ -160,10 +152,8 @@ void uart_init()
     //
     // Set the main print interface to use the UART print function we defined.
     //
-#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
     uart_tx_lock = xSemaphoreCreateMutex();
     configASSERT(uart_tx_lock != NULL);
-#endif
     am_util_stdio_printf_init(uart_print);
 }
 

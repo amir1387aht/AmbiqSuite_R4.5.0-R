@@ -83,6 +83,7 @@ void lvgl_display_init(void* pvParameters) {
 #endif
 
     screen_menu_create();
+    watch_memory_monitor_start();
     watch_memory_report();
     display_awake = true;
     //ui_init();

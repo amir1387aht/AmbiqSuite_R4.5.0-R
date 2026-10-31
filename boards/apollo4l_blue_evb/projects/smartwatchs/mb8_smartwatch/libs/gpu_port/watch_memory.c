@@ -9,6 +9,8 @@
 #include "watch_glyph_cache.h"
 #include "drivers/display/display.h"
 #include <stdint.h>
+#include <stdio.h>
+#include "drivers/uart/uart_output.h"
 extern unsigned char __cpu_ram_start__, __cpu_ram_end__, __shared_ram_start__, __shared_ram_end__;
 extern unsigned char __stack_start__, __stack_end__;
 extern unsigned char __display_buffers_start__, __display_buffers_end__;
@@ -62,4 +64,50 @@ void watch_memory_report(void)
     am_util_stdio_printf("  Glyph arena filled=%lu / reserved=%lu (already included in shared use, NOT heap-free).\r\n",
         UL(watch_gpu_glyph_cache_used()), UL(watch_gpu_glyph_cache_capacity()));
     am_util_stdio_printf("Free excludes allocator metadata, reserved stacks and cached allocations; no live stack scan.\r\n=== End RAM startup snapshot ===\r\n\r\n");
+}
+
+/* Periodic diagnostics must never drain UART from the rendering task. Take a
+ * consistent heap snapshot briefly, then format/write with scheduling enabled.
+ * A failed diagnostic write is dropped rather than stopping the UI. */
+static TaskHandle_t memory_monitor_task;
+static void memory_monitor(void *argument)
+{
+    (void)argument;
+    TickType_t next = xTaskGetTickCount();
+    const TickType_t interval = pdMS_TO_TICKS(2000);
+    configASSERT(interval > 0);
+    for (;;) {
+        vTaskDelayUntil(&next, interval);
+        app_memory_pool_stats_t cpu, shared;
+        HeapStats_t rtos;
+        vTaskSuspendAll();
+        app_memory_stats(&cpu, &shared);
+        vPortGetHeapStats(&rtos);
+        (void)xTaskResumeAll();
+
+        size_t total = SPAN(__cpu_ram_start__, __cpu_ram_end__) +
+                       SPAN(__shared_ram_start__, __shared_ram_end__);
+        size_t app_free = cpu.free + shared.free;
+        size_t free_total = app_free + rtos.xAvailableHeapSpaceInBytes;
+        configASSERT(free_total <= total);
+        char line[512];
+        int length = snprintf(line, sizeof(line),
+            "RAM used_or_reserved=%lu / total=%lu - free=%lu; app_free=%lu; "
+            "TCM_free=%lu largest=%lu; shared_free=%lu largest=%lu; "
+            "RTOS_free=%lu min=%lu largest=%lu\r\n",
+            UL(total - free_total), UL(total), UL(free_total), UL(app_free),
+            UL(cpu.free), UL(cpu.largest), UL(shared.free), UL(shared.largest),
+            UL(rtos.xAvailableHeapSpaceInBytes), UL(rtos.xMinimumEverFreeBytesRemaining),
+            UL(rtos.xSizeOfLargestFreeBlockInBytes));
+        if (length > 0 && (size_t)length < sizeof(line))
+            (void)uart_log_write(line, (size_t)length);
+    }
+}
+void watch_memory_monitor_start(void)
+{
+    /* Called once by the LVGL owner after UI creation; repeat calls are safe. */
+    if (memory_monitor_task) return;
+    configASSERT(tskIDLE_PRIORITY + 1 < TASK_PRIORITY_MEDIUM);
+    configASSERT(xTaskCreate(memory_monitor, "RAM UART", 1024, NULL,
+        tskIDLE_PRIORITY + 1, &memory_monitor_task) == pdPASS);
 }
