@@ -1,11 +1,10 @@
-/* Experimental source-built LVGL 8.1 / Apollo4l NemaP RGB565 renderer.
- * No calls into lvgl_ambiq_porting.a: that archive has a 32-bit LVGL ABI.
- * The public LVGL hooks and real NemaGFX library are used instead. Unsupported
- * primitives are synchronized before returning LV_RES_INV to LVGL's CPU path.
- * Owned exclusively by the LVGL task; no destination/pointer survives a flush.
+/* Apollo4l NemaP renderer for the upstream LVGL 8.4 draw-context API.
+ * RGB565 throughout: no conversion buffer or proprietary LVGL 8.1 archive.
+ * GPU commands are owned by the UI task. Every software operation, buffer
+ * change and release is fenced; software primitives cannot enqueue GPU work.
  */
 #include "lvgl.h"
-#include "lv_gpu_ambiq_nema.h"
+#include "watch_gpu_renderer.h"
 #include "watch_gpu.h"
 #include "watch_glyph_cache.h"
 #include "nema_graphics.h"
@@ -29,7 +28,7 @@ _Static_assert(sizeof(lv_color_t) == 2, "RGB565 ABI required");
 #define ROUNDED_RESERVE (12u * 1024u)
 static nema_cmdlist_t native_command_list;
 static uint32_t       batch_glyph_count;
-static bool           initialized, commands_pending, label_active;
+static bool           initialized, commands_pending;
 
 static void native_stop(const char *where, uint32_t error)
 {
@@ -40,9 +39,8 @@ static void native_stop(const char *where, uint32_t error)
     }
 }
 
-void lv_gpu_ambiq_nema_wait(lv_disp_drv_t *driver)
+void watch_gpu_renderer_wait(void)
 {
-    (void)driver;
     if (!initialized || !commands_pending)
         return;
 
@@ -73,14 +71,7 @@ void lv_gpu_ambiq_nema_wait(lv_disp_drv_t *driver)
     nema_cl_rewind(&native_command_list);
 }
 
-static lv_res_t cpu_fallback(void)
-{
-    lv_gpu_ambiq_nema_wait(NULL);
-    ++watch_gpu_stats.native_cpu_fallbacks;
-    return LV_RES_INV;
-}
-
-lv_res_t lv_gpu_ambiq_nema_init(void)
+void watch_gpu_renderer_init(void)
 {
     configASSERT(!initialized);
     if (am_hal_pwrctrl_periph_enable(AM_HAL_PWRCTRL_PERIPH_GFX) != AM_HAL_STATUS_SUCCESS)
@@ -94,16 +85,6 @@ lv_res_t lv_gpu_ambiq_nema_init(void)
     if (!native_command_list.bo.base_virt || error)
         native_stop("CL allocation", error);
     initialized = true;
-    return LV_RES_OK;
-}
-
-void lv_gpu_ambiq_nema_deinit(void)
-{
-    lv_gpu_ambiq_nema_wait(NULL);
-    if (initialized)
-        nema_cl_destroy(&native_command_list);
-    initialized  = false;
-    label_active = false;
 }
 
 static bool is_shared_memory_range(const void *pointer, size_t size)
@@ -129,7 +110,7 @@ static bool begin_target(
     configASSERT(
         native_command_list.offset >= 0 && native_command_list.offset <= native_command_list.size);
     if ((uint32_t)(native_command_list.size - native_command_list.offset) < reserve_words)
-        lv_gpu_ambiq_nema_wait(NULL);
+        watch_gpu_renderer_wait();
     configASSERT(
         (uint32_t)(native_command_list.size - native_command_list.offset) >= reserve_words);
     nema_cl_bind(&native_command_list);
@@ -153,266 +134,320 @@ static uint32_t color_to_nema_rgba(lv_color_t color, lv_opa_t opacity)
     return nema_rgba(expanded.ch.red, expanded.ch.green, expanded.ch.blue, opacity);
 }
 
-static bool current_target(const lv_area_t *clip, uint32_t reserved_bytes, lv_area_t *area)
+/* 8.4 passes the active destination in the context, including temporary
+ * layers. Never infer it from the display's primary draw buffer. */
+static bool current_target(
+    lv_draw_ctx_t *ctx, const lv_area_t *clip, uint32_t reserved_bytes, lv_area_t *area)
 {
-    lv_disp_t *display = _lv_refr_get_disp_refreshing();
-    if (!display || display->driver->set_px_cb)
+    watch_gpu_draw_ctx_t *gpu = (watch_gpu_draw_ctx_t *)ctx;
+    if (gpu->software_depth || gpu->display_driver->screen_transp ||
+        gpu->display_driver->set_px_cb || !ctx->buf || !ctx->buf_area || !ctx->clip_area)
         return false;
-    lv_disp_draw_buf_t *buffer = lv_disp_get_draw_buf(display);
-    *area                      = buffer->area;
+    *area = *ctx->buf_area;
     lv_area_t clipped;
-    if (!_lv_area_intersect(&clipped, area, clip))
+    if (!_lv_area_intersect(&clipped, clip, ctx->clip_area) ||
+        !_lv_area_intersect(&clipped, &clipped, area))
         return false;
     lv_area_move(&clipped, -area->x1, -area->y1);
-    return begin_target(buffer->buf_act, area, &clipped, reserved_bytes);
+    return begin_target(ctx->buf, area, &clipped, reserved_bytes);
 }
 
-lv_res_t lv_gpu_ambiq_nema_fill(const lv_area_t *disp_area,
-    lv_color_t                                  *disp_buf,
-    const lv_area_t                             *draw_area,
-    lv_color_t                                   color,
-    lv_opa_t                                     opa,
-    const lv_opa_t                              *mask,
-    lv_draw_mask_res_t                           mask_res)
+static void software_begin(lv_draw_ctx_t *ctx)
 {
-    (void)mask;
-    if (mask_res == LV_DRAW_MASK_RES_TRANSP || opa == LV_OPA_TRANSP)
-        return LV_RES_OK;
-    /* Tiny masked scanlines and arbitrary masks retain the exact LVGL path. */
-    if (mask_res != LV_DRAW_MASK_RES_FULL_COVER)
-        return cpu_fallback();
-    lv_area_t bounds = {0, 0, lv_area_get_width(disp_area) - 1, lv_area_get_height(disp_area) - 1};
-    lv_area_t clip;
-    if (!_lv_area_intersect(&clip, &bounds, draw_area))
-        return LV_RES_OK;
-    if (!begin_target(disp_buf, disp_area, &clip, SIMPLE_RESERVE))
-        return cpu_fallback();
-    nema_set_blend_fill(opa == LV_OPA_COVER ? NEMA_BL_SRC : NEMA_BL_SIMPLE);
-    nema_fill_rect(clip.x1,
-        clip.y1,
-        lv_area_get_width(&clip),
-        lv_area_get_height(&clip),
-        color_to_nema_rgba(color, opa));
-    end_commands();
-    ++watch_gpu_stats.native_fill_gpu;
-    return LV_RES_OK;
+    watch_gpu_renderer_wait();
+    watch_gpu_draw_ctx_t *gpu = (watch_gpu_draw_ctx_t *)ctx;
+    if (!gpu->software_depth++)
+        ++watch_gpu_stats.native_cpu_fallbacks;
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_bg(const lv_area_t *clip,
-    const lv_area_t                                *draw,
-    lv_coord_t                                      radius,
-    lv_color_t                                      color,
-    lv_opa_t                                        opa,
-    lv_blend_mode_t                                 blend)
+static void software_end(lv_draw_ctx_t *ctx)
 {
-    if (blend != LV_BLEND_MODE_NORMAL || radius < 0 || radius > 128 || lv_draw_mask_is_any(draw))
-        return cpu_fallback();
-    lv_area_t visible;
-    if (!_lv_area_intersect(&visible, clip, draw))
-        return LV_RES_OK;
-    if (opa == LV_OPA_TRANSP)
-        return LV_RES_OK;
-    lv_area_t area;
-    if (!current_target(&visible, radius ? ROUNDED_RESERVE : SIMPLE_RESERVE, &area))
-        return cpu_fallback();
-    /* AA rounded edges generate coverage alpha even for an opaque fill.
-     * Match the vendor background path: source-alpha blend, not SRC replace. */
-    nema_set_blend_fill(radius || opa != LV_OPA_COVER ? NEMA_BL_SIMPLE : NEMA_BL_SRC);
-    int x = draw->x1 - area.x1, y = draw->y1 - area.y1;
-    if (radius)
-        nema_fill_rounded_rect_aa(x,
-            y,
-            lv_area_get_width(draw),
-            lv_area_get_height(draw),
-            radius,
-            color_to_nema_rgba(color, opa));
+    watch_gpu_draw_ctx_t *gpu = (watch_gpu_draw_ctx_t *)ctx;
+    configASSERT(gpu->software_depth);
+    --gpu->software_depth;
+    watch_gpu_cpu_write_complete();
+}
+
+static lv_opa_t normalized_opacity(lv_opa_t opa)
+{
+    return opa >= LV_OPA_MAX ? LV_OPA_COVER : opa;
+}
+
+static void context_wait(lv_draw_ctx_t *ctx)
+{
+    (void)ctx;
+    watch_gpu_renderer_wait();
+}
+
+static void blend(lv_draw_ctx_t *ctx, const lv_draw_sw_blend_dsc_t *dsc)
+{
+    if (dsc->opa <= LV_OPA_MIN || (dsc->mask_buf && dsc->mask_res == LV_DRAW_MASK_RES_TRANSP))
+        return;
+    lv_area_t visible, area;
+    if (!_lv_area_intersect(&visible, dsc->blend_area, ctx->clip_area))
+        return;
+    if (!dsc->src_buf && dsc->blend_mode == LV_BLEND_MODE_NORMAL &&
+        (!dsc->mask_buf || dsc->mask_res == LV_DRAW_MASK_RES_FULL_COVER) &&
+        current_target(ctx, &visible, SIMPLE_RESERVE, &area))
+    {
+        lv_opa_t opa = normalized_opacity(dsc->opa);
+        nema_set_blend_fill(opa == LV_OPA_COVER ? NEMA_BL_SRC : NEMA_BL_SIMPLE);
+        nema_fill_rect(visible.x1 - area.x1,
+            visible.y1 - area.y1,
+            lv_area_get_width(&visible),
+            lv_area_get_height(&visible),
+            color_to_nema_rgba(dsc->color, opa));
+        end_commands();
+        ++watch_gpu_stats.native_fill_gpu;
+        return;
+    }
+    /* A software primitive may alternate direct pixel writes with blend calls.
+     * Keep its entire lifetime synchronous, not just individual scanlines. */
+    if (((watch_gpu_draw_ctx_t *)ctx)->software_depth)
+        lv_draw_sw_blend_basic(ctx, dsc);
     else
-        nema_fill_rect(x,
-            y,
-            lv_area_get_width(draw),
-            lv_area_get_height(draw),
-            color_to_nema_rgba(color, opa));
+    {
+        software_begin(ctx);
+        lv_draw_sw_blend_basic(ctx, dsc);
+        software_end(ctx);
+    }
+}
+
+static bool draw_background(
+    lv_draw_ctx_t *ctx, const lv_draw_rect_dsc_t *dsc, const lv_area_t *coords)
+{
+    if (dsc->blend_mode != LV_BLEND_MODE_NORMAL || dsc->bg_grad.dir != LV_GRAD_DIR_NONE ||
+        (dsc->bg_img_src && dsc->bg_img_opa > LV_OPA_MIN) || lv_draw_mask_is_any(coords))
+        return false;
+    lv_area_t visible;
+    if (dsc->bg_opa <= LV_OPA_MIN || !_lv_area_intersect(&visible, coords, ctx->clip_area))
+        return true;
+    lv_coord_t radius     = dsc->radius;
+    int        max_radius = LV_MIN(lv_area_get_width(coords), lv_area_get_height(coords)) / 2;
+    if (radius > max_radius)
+        radius = max_radius; /* Includes LV_RADIUS_CIRCLE, as in software. */
+    if (radius < 0 || radius > 128 ||
+        (radius && !((watch_gpu_draw_ctx_t *)ctx)->display_driver->antialiasing) ||
+        (dsc->radius && dsc->border_width > 1 && dsc->border_opa >= LV_OPA_MAX))
+        return false;
+    lv_area_t area;
+    if (!current_target(ctx, &visible, radius ? ROUNDED_RESERVE : SIMPLE_RESERVE, &area))
+        return false;
+    lv_opa_t opa = normalized_opacity(dsc->bg_opa);
+    /* Coverage alpha is needed at AA rounded edges even for opaque colors. */
+    nema_set_blend_fill(radius || opa != LV_OPA_COVER ? NEMA_BL_SIMPLE : NEMA_BL_SRC);
+    if (radius)
+        nema_fill_rounded_rect_aa(coords->x1 - area.x1,
+            coords->y1 - area.y1,
+            lv_area_get_width(coords),
+            lv_area_get_height(coords),
+            radius,
+            color_to_nema_rgba(dsc->bg_color, opa));
+    else
+        nema_fill_rect(coords->x1 - area.x1,
+            coords->y1 - area.y1,
+            lv_area_get_width(coords),
+            lv_area_get_height(coords),
+            color_to_nema_rgba(dsc->bg_color, opa));
     end_commands();
     ++watch_gpu_stats.native_bg_gpu;
-    return LV_RES_OK;
+    return true;
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_label_pre(const lv_area_t *clip, lv_blend_mode_t blend)
+static void draw_rect(lv_draw_ctx_t *ctx, const lv_draw_rect_dsc_t *dsc, const lv_area_t *coords)
 {
-    label_active = blend == LV_BLEND_MODE_NORMAL && !lv_draw_mask_is_any(clip);
-    return label_active ? LV_RES_OK : cpu_fallback();
+    if ((!dsc->border_width || dsc->border_opa <= LV_OPA_MIN) &&
+        (!dsc->outline_width || dsc->outline_opa <= LV_OPA_MIN) &&
+        (!dsc->shadow_width || dsc->shadow_opa <= LV_OPA_MIN) && draw_background(ctx, dsc, coords))
+        return;
+    software_begin(ctx);
+    lv_draw_sw_rect(ctx, dsc, coords);
+    software_end(ctx);
 }
 
-void lv_gpu_ambiq_nema_draw_label_post(void)
+static void draw_bg(lv_draw_ctx_t *ctx, const lv_draw_rect_dsc_t *dsc, const lv_area_t *coords)
 {
-    label_active = false;
+    if (draw_background(ctx, dsc, coords))
+        return;
+    software_begin(ctx);
+    lv_draw_sw_bg(ctx, dsc, coords);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_letter_pre(const lv_area_t *clip, lv_blend_mode_t blend)
+static void draw_letter(
+    lv_draw_ctx_t *ctx, const lv_draw_label_dsc_t *dsc, const lv_point_t *position, uint32_t letter)
 {
-    return lv_gpu_ambiq_nema_draw_label_pre(clip, blend);
-}
-
-void lv_gpu_ambiq_nema_draw_letter_post(void)
-{
-    lv_gpu_ambiq_nema_draw_label_post();
-}
-
-lv_res_t lv_gpu_ambiq_nema_draw_letter(lv_coord_t x,
-    lv_coord_t                                    y,
-    lv_font_glyph_dsc_t                          *glyph,
-    const lv_area_t                              *clip,
-    const uint8_t                                *bitmap,
-    lv_color_t                                    color,
-    lv_opa_t                                      opa,
-    lv_blend_mode_t                               blend)
-{
-    if (!label_active || blend != LV_BLEND_MODE_NORMAL)
+    if (dsc->opa <= LV_OPA_MIN)
+        return;
+    lv_font_glyph_dsc_t glyph;
+    if (!dsc->font || dsc->blend_mode != LV_BLEND_MODE_NORMAL ||
+        !lv_font_get_glyph_dsc(dsc->font, &glyph, letter, 0) || glyph.is_placeholder ||
+        !glyph.resolved_font || glyph.resolved_font->subpx || lv_draw_mask_is_any(ctx->clip_area))
         goto fallback;
-    const uint8_t *cached = watch_gpu_glyph_bitmap(bitmap, glyph->box_w, glyph->box_h, glyph->bpp);
-    if (!cached)
+    if (!glyph.box_w || !glyph.box_h)
+        return;
+    int x = position->x + glyph.ofs_x;
+    int y = position->y + dsc->font->line_height - dsc->font->base_line - glyph.box_h - glyph.ofs_y;
+    lv_area_t bounds = {x, y, x + glyph.box_w - 1, y + glyph.box_h - 1};
+    lv_area_t visible, area;
+    if (!_lv_area_intersect(&visible, &bounds, ctx->clip_area))
+        return;
+    const uint8_t *bitmap = lv_font_get_glyph_bitmap(glyph.resolved_font, letter);
+    const uint8_t *cached = watch_gpu_glyph_bitmap(bitmap, glyph.box_w, glyph.box_h, glyph.bpp);
+    if (!cached || !current_target(ctx, &visible, SIMPLE_RESERVE, &area))
         goto fallback;
-    lv_area_t area;
-    if (!current_target(clip, SIMPLE_RESERVE, &area))
-        goto fallback;
-    uint32_t c = color_to_nema_rgba(color, opa);
-    /* Same public Nema A4 blend contract as the vendor glyph renderer:
-     * alpha texture supplies coverage; constant alpha modulates label opacity. */
+    lv_opa_t opa   = normalized_opacity(dsc->opa);
+    uint32_t color = color_to_nema_rgba(dsc->color, opa);
     nema_set_blend_blit(NEMA_BL_SIMPLE | (opa == LV_OPA_COVER ? 0u : NEMA_BLOP_MODULATE_A));
-    nema_set_const_color(c);
-    nema_set_tex_color(c);
+    nema_set_const_color(color);
+    nema_set_tex_color(color);
     nema_bind_src_tex((uintptr_t)cached,
-        glyph->box_w,
-        glyph->box_h,
+        glyph.box_w,
+        glyph.box_h,
         NEMA_A4,
-        (glyph->box_w + 1u) / 2u,
+        (glyph.box_w + 1u) / 2u,
         NEMA_FILTER_PS);
     nema_blit(x - area.x1, y - area.y1);
     end_commands();
     ++batch_glyph_count;
     ++watch_gpu_stats.gpu_glyphs;
-    return LV_RES_OK;
+    return;
 fallback:
-    label_active = false;
     ++watch_gpu_stats.cpu_glyphs;
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_sw_letter(ctx, dsc, position, letter);
+    software_end(ctx);
 }
 
-/* Unsupported primitives return INV, never a false GPU success. LVGL's
- * software algorithms continue to use the native RGB565 fill hook where safe. */
-lv_res_t lv_gpu_ambiq_nema_map(const lv_area_t *a,
-    lv_color_t                                 *b,
-    const lv_area_t                            *c,
-    const lv_area_t                            *d,
-    const lv_color_t                           *e,
-    lv_opa_t                                    f,
-    const lv_opa_t                             *g,
-    lv_draw_mask_res_t                          h)
+/* Fence all software entry points, including those which can write pixels
+ * directly rather than invoking the blend callback. */
+static void draw_img_decoded(lv_draw_ctx_t *ctx,
+    const lv_draw_img_dsc_t                *dsc,
+    const lv_area_t                        *coords,
+    const uint8_t                          *pixels,
+    lv_img_cf_t                             format)
 {
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_sw_img_decoded(ctx, dsc, coords, pixels, format);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_blit(
-    const lv_area_t *a, const lv_area_t *b, const void *c, const lv_draw_img_dsc_t *d)
+static void draw_line(lv_draw_ctx_t *ctx,
+    const lv_draw_line_dsc_t        *dsc,
+    const lv_point_t                *first,
+    const lv_point_t                *last)
 {
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_sw_line(ctx, dsc, first, last);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_bg_img(
-    const lv_area_t *a, const lv_area_t *b, const lv_draw_rect_dsc_t *c, const lv_draw_img_dsc_t *d)
+static void draw_arc(lv_draw_ctx_t *ctx,
+    const lv_draw_arc_dsc_t        *dsc,
+    const lv_point_t               *center,
+    uint16_t                        radius,
+    uint16_t                        start,
+    uint16_t                        end)
 {
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_sw_arc(ctx, dsc, center, radius, start, end);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_border(const lv_area_t *a,
-    const lv_area_t                                    *b,
-    const lv_area_t                                    *c,
-    lv_coord_t                                          d,
-    lv_coord_t                                          e,
-    const lv_draw_rect_dsc_t                           *f)
+static void draw_polygon(
+    lv_draw_ctx_t *ctx, const lv_draw_rect_dsc_t *dsc, const lv_point_t *points, uint16_t count)
 {
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_sw_polygon(ctx, dsc, points, count);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_outline(const lv_area_t *a,
-    const lv_area_t                                     *b,
-    const lv_area_t                                     *c,
-    lv_coord_t                                           d,
-    lv_coord_t                                           e,
-    const lv_draw_rect_dsc_t                            *f)
+static void draw_transform(lv_draw_ctx_t *ctx,
+    const lv_area_t                      *area,
+    const void                           *source,
+    lv_coord_t                            width,
+    lv_coord_t                            height,
+    lv_coord_t                            stride,
+    const lv_draw_img_dsc_t              *dsc,
+    lv_img_cf_t                           format,
+    lv_color_t                           *colors,
+    lv_opa_t                             *opacity)
 {
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_sw_transform(ctx, area, source, width, height, stride, dsc, format, colors, opacity);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_line(
-    const lv_point_t *a, const lv_point_t *b, const lv_area_t *c, const lv_draw_line_dsc_t *d)
+static void buffer_copy(lv_draw_ctx_t *ctx,
+    void                              *dest,
+    lv_coord_t                         dest_stride,
+    const lv_area_t                   *dest_area,
+    void                              *source,
+    lv_coord_t                         source_stride,
+    const lv_area_t                   *source_area)
 {
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_sw_buffer_copy(ctx, dest, dest_stride, dest_area, source, source_stride, source_area);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_polygon(
-    const lv_point_t a[], uint16_t b, const lv_area_t *c, const lv_draw_rect_dsc_t *d)
+static lv_draw_layer_ctx_t *layer_init(
+    lv_draw_ctx_t *ctx, lv_draw_layer_ctx_t *layer, lv_draw_layer_flags_t flags)
 {
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_layer_ctx_t *result = lv_draw_sw_layer_create(ctx, layer, flags);
+    software_end(ctx);
+    return result;
 }
 
-lv_res_t lv_gpu_ambiq_nema_draw_arc(lv_coord_t a,
-    lv_coord_t                                 b,
-    uint16_t                                   c,
-    uint16_t                                   d,
-    uint16_t                                   e,
-    const lv_area_t                           *f,
-    const lv_draw_arc_dsc_t                   *g)
+static void layer_adjust(
+    lv_draw_ctx_t *ctx, lv_draw_layer_ctx_t *layer, lv_draw_layer_flags_t flags)
 {
-    return cpu_fallback();
+    software_begin(ctx);
+    lv_draw_sw_layer_adjust(ctx, layer, flags);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_gpu_only_fb(lv_disp_t *display)
+static void layer_blend(
+    lv_draw_ctx_t *ctx, lv_draw_layer_ctx_t *layer, const lv_draw_img_dsc_t *dsc)
 {
-    (void)display;
-    return LV_RES_INV;
-} /* RGB565 is CPU accessible. */
-
-lv_res_t lv_gpu_ambiq_nema_fb_support_format(lv_img_cf_t cf)
-{
-    return cf == LV_IMG_CF_TRUE_COLOR || cf == LV_IMG_CF_AMBIQ_RGB565 ? LV_RES_OK : LV_RES_INV;
+    software_begin(ctx);
+    lv_draw_sw_layer_blend(ctx, layer, dsc);
+    software_end(ctx);
 }
 
-uint32_t lv_gpu_ambiq_nema_fb_size_needed(lv_img_cf_t cf, lv_coord_t width, lv_coord_t height)
+static void layer_destroy(lv_draw_ctx_t *ctx, lv_draw_layer_ctx_t *layer)
 {
-    return lv_gpu_ambiq_nema_fb_support_format(cf) == LV_RES_OK && width > 0 && height > 0
-               ? (uint32_t)width * height * sizeof(lv_color_t)
-               : 0;
+    software_begin(ctx);
+    lv_draw_sw_layer_destroy(ctx, layer);
+    software_end(ctx);
 }
 
-lv_res_t lv_gpu_ambiq_nema_fb_set(
-    void *descriptor, lv_img_cf_t cf, lv_coord_t w, lv_coord_t h, void *pixels, uint32_t size)
+void watch_gpu_draw_ctx_init(lv_disp_drv_t *driver, lv_draw_ctx_t *ctx)
 {
-    uint32_t needed = lv_gpu_ambiq_nema_fb_size_needed(cf, w, h);
-    if (!descriptor || !needed || size < needed)
-        return LV_RES_INV;
-    img_obj_t *fb = descriptor;
-    memset(fb, 0, sizeof(*fb));
-    fb->bo.base_phys = (uintptr_t)pixels;
-    fb->bo.base_virt = pixels;
-    fb->bo.size      = size;
-    fb->w            = w;
-    fb->h            = h;
-    fb->format       = NEMA_RGB565;
-    fb->stride       = w * sizeof(lv_color_t);
-    return LV_RES_OK;
+    lv_draw_sw_init_ctx(driver, ctx);
+    watch_gpu_draw_ctx_t *gpu = (watch_gpu_draw_ctx_t *)ctx;
+    gpu->display_driver       = driver;
+    gpu->software_depth       = 0;
+    gpu->software.blend       = blend;
+    ctx->draw_rect            = draw_rect;
+    ctx->draw_bg              = draw_bg;
+    ctx->draw_letter          = draw_letter;
+    ctx->draw_img_decoded     = draw_img_decoded;
+    ctx->draw_line            = draw_line;
+    ctx->draw_arc             = draw_arc;
+    ctx->draw_polygon         = draw_polygon;
+    ctx->draw_transform       = draw_transform;
+    ctx->buffer_copy          = buffer_copy;
+    ctx->wait_for_finish      = context_wait;
+    ctx->layer_init           = layer_init;
+    ctx->layer_adjust         = layer_adjust;
+    ctx->layer_blend          = layer_blend;
+    ctx->layer_destroy        = layer_destroy;
 }
 
-lv_res_t lv_gpu_ambiq_nema_fb_clear(void *descriptor)
+void watch_gpu_draw_ctx_deinit(lv_disp_drv_t *driver, lv_draw_ctx_t *ctx)
 {
-    img_obj_t *fb = descriptor;
-    if (!fb || fb->format != NEMA_RGB565 || !fb->w || !fb->h)
-        return cpu_fallback();
-    lv_area_t area = {0, 0, fb->w - 1, fb->h - 1};
-    if (!begin_target(fb->bo.base_virt, &area, &area, SIMPLE_RESERVE))
-        return cpu_fallback();
-    nema_set_blend_fill(NEMA_BL_SRC);
-    nema_fill_rect(0, 0, fb->w, fb->h, nema_rgba(0, 0, 0, 255));
-    end_commands();
-    return LV_RES_OK;
+    watch_gpu_renderer_wait();
+    lv_draw_sw_deinit_ctx(driver, ctx);
 }

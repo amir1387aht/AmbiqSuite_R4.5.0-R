@@ -1,7 +1,7 @@
-/* GPU initialization for the original watch application; SDK LVGL v8.1 ABI. */
+/* GPU initialization for the original watch application; upstream LVGL v8.4 draw context. */
 #include "watch_gpu.h"
 #include "lvgl.h"
-#include "lv_gpu_ambiq_nema.h"
+#include "watch_gpu_renderer.h"
 #include "nema_error.h"
 #include "nema_sys_defs.h"
 #include "am_mcu_apollo.h"
@@ -10,7 +10,7 @@
 #include "watch_glyph_cache.h"
 #include "watch_gpu_copy.h"
 #include "watch_tick.h"
-#if !LV_USE_PERF_MONITOR || !LV_USE_LABEL || !LV_USE_GPU_AMBIQ_NEMA
+#if !LV_USE_PERF_MONITOR || !LV_USE_LABEL
 #error "This watch build requires the FPS monitor, labels and Nema GPU enabled"
 #endif
 
@@ -63,6 +63,7 @@ void watch_gpu_init(void)
     lv_log_register_print_cb(log_line);
 #endif
     lv_init();
+    watch_gpu_renderer_init();
     am_gpu_power_enable(AM_GPU_PWRCTRL_USER);
     if (nema_get_error() != NEMA_ERR_NO_ERROR || lv_mem_test() != LV_RES_OK)
     {
@@ -76,7 +77,7 @@ void watch_gpu_init(void)
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 #endif
-    am_util_stdio_printf("GPU glyph-cache-v1: FPS monitor=%u refresh=%u ms profile=%u\r\n",
+    am_util_stdio_printf("LVGL 8.4.0 GPU: FPS monitor=%u refresh=%u ms profile=%u\r\n",
         (unsigned)LV_USE_PERF_MONITOR,
         (unsigned)LV_DISP_DEF_REFR_PERIOD,
         (unsigned)WATCH_GPU_PROFILE);
@@ -84,5 +85,5 @@ void watch_gpu_init(void)
     am_util_stdio_printf("GPU IRQ: immediate RTOS wake; profile UART below LVGL.\r\n");
     watch_gpu_ready = true;
     am_util_stdio_printf(
-        "Native RGB565: LVGL16 -> Nema RGB565 -> RGB565 panel; no BGRA conversion.\r\n");
+        "Native RGB565: LVGL 8.4.0 / LVGL16 -> Nema RGB565 -> RGB565 panel; no BGRA conversion.\r\n");
 }

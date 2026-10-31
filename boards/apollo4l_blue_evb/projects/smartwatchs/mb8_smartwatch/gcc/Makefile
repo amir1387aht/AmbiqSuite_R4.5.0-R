@@ -1,4 +1,4 @@
-# Apollo4 Blue Lite / Mi Band 8: SDK-matched LVGL 8.1 + NemaP GPU.
+# Apollo4 Blue Lite / Mi Band 8: upstream LVGL 8.4.0 + NemaP GPU.
 .DEFAULT_GOAL := all
 ROOT_DIR := ../../../../../..
 TARGET := mb8_smartwatch
@@ -21,12 +21,11 @@ endif
 endif
 SHELL := /bin/bash
 
-LVGL_DIR := $(ROOT_DIR)/third_party/LVGL/lvgl
-AMBIQ_DIR := $(ROOT_DIR)/third_party/LVGL/ambiq_support
+LVGL_DIR := ../libs/lvgl84
 NEMA_DIR := $(ROOT_DIR)/third_party/ThinkSi
 NEMA_PLATFORM_DIR := $(NEMA_DIR)/config/apollo4l_nemagfx
 
-# Full paths preserve source identity; never compile the copied 8.4 tree.
+# Full paths preserve source identity; compile only the pinned upstream 8.4 runtime.
 # Enumerate with GNU make, not shell find: Windows find.exe and shell quoting
 # can silently return an empty list, dropping main(), RTOS hooks and LVGL.
 source_dirs = $(1) $(foreach d,$(wildcard $(1)/*/),$(call source_dirs,$(patsubst %/,%,$(d))))
@@ -39,33 +38,32 @@ else
 $(error Application source discovery failed: expected ../src/main.c and ../src/rtos.c. Build from this project's gcc directory)
 endif
 ifeq ($(filter $(LVGL_DIR)/src/core/lv_obj.c,$(LVGL_SRC)),)
-$(error SDK LVGL source discovery failed: expected $(LVGL_DIR)/src/core/lv_obj.c)
+$(error LVGL 8.4 source discovery failed: expected $(LVGL_DIR)/src/core/lv_obj.c)
 endif
-# Project-local allocation adapters share app heaps; fonts use the SDK ABI.
-LVGL_SRC := $(filter-out $(LVGL_DIR)/src/misc/lv_mem.c $(LVGL_DIR)/src/misc/lv_tlsf.c $(LVGL_DIR)/src/gpu/lv_gpu_ambiq_nema.c,$(LVGL_SRC))
+# Project-local allocation adapters share app heaps; custom fonts use the 8.4 ABI.
+LVGL_SRC := $(filter-out $(LVGL_DIR)/src/misc/lv_mem.c,$(LVGL_SRC))
 FONT_OVERRIDES := $(notdir $(wildcard ../libs/gpu_port/lv_font_montserrat_*.c))
 LVGL_SRC := $(filter-out $(addprefix $(LVGL_DIR)/src/font/,$(FONT_OVERRIDES)),$(LVGL_SRC))
 PORT_SRC := $(wildcard ../libs/gpu_port/*.c)
 # Exclude removed legacy names in an existing working tree as well.
 PORT_SRC := $(filter-out ../libs/gpu_port/lv_gpu_ambiq_nema.c ../libs/gpu_port/watch_gpu_convert.c,$(PORT_SRC))
-AMBIQ_SRC := $(addprefix $(AMBIQ_DIR)/,lv_ambiq_nema_hal.c lv_ambiq_misc.c lv_ambiq_font_align.c lv_ambiq_decoder.c)
 # The local watch_nema_hal.c fixes the SDK binary-semaphore ISR exit.
 NEMA_SRC := $(addprefix $(NEMA_PLATFORM_DIR)/,nema_event.c nema_utils.c)
 UTIL_SRC := $(addprefix $(ROOT_DIR)/utils/,am_util_delay.c am_util_faultisr.c am_util_id.c am_util_stdio.c am_util_string.c am_util_time.c)
 FREERTOS_DIR := $(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source
 RTOS_SRC := $(addprefix $(FREERTOS_DIR)/,queue.c tasks.c timers.c list.c event_groups.c)
 RTOS_SRC += $(FREERTOS_DIR)/portable/GCC/AMapollo4/port.c $(FREERTOS_DIR)/portable/MemMang/heap_4.c
-SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(AMBIQ_SRC) $(NEMA_SRC) $(UTIL_SRC) $(RTOS_SRC) startup_gcc.c
+SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(NEMA_SRC) $(UTIL_SRC) $(RTOS_SRC) startup_gcc.c
 # Strip leading ../ segments rather than allowing paths to escape CONFIG.
 obj = $(CONFIG)/obj/$(subst ../,,$(1:.c=.o))
 OBJS := $(foreach s,$(SRC),$(call obj,$(s)))
 
 INCLUDE_DIRS := ../src ../libs/gpu_port $(ROOT_DIR) $(ROOT_DIR)/CMSIS/AmbiqMicro/Include $(ROOT_DIR)/CMSIS/ARM/Include ../../../../bsp $(ROOT_DIR)/devices $(ROOT_DIR)/utils $(ROOT_DIR)/mcu/apollo4l $(ROOT_DIR)/mcu/apollo4l/hal $(ROOT_DIR)/mcu/apollo4l/hal/mcu $(FREERTOS_DIR)/include $(FREERTOS_DIR)/portable/GCC/AMapollo4
-INCLUDE_DIRS += $(LVGL_DIR) $(LVGL_DIR)/src $(LVGL_DIR)/src/misc $(LVGL_DIR)/src/gpu $(AMBIQ_DIR)
+INCLUDE_DIRS += $(LVGL_DIR) $(LVGL_DIR)/src $(LVGL_DIR)/src/misc $(LVGL_DIR)/src/draw/sw
 INCLUDE_DIRS += $(NEMA_DIR)/NemaGFX_SDK/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/common/mem $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaDC $(NEMA_DIR)/NemaGFX_SDK/include/tsi/common $(NEMA_PLATFORM_DIR)
 INCLUDE_DIRS += $(APP_DIRS)
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
-CPPFLAGS += -DWATCH_NATIVE_RGB565=1 -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_COPY=$(GPU_COPY) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
+CPPFLAGS += -DWATCH_NATIVE_RGB565=1 -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_COPY=$(GPU_COPY) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="watch_nema_memory.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
 ARCH := -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
 CFLAGS := $(ARCH) -std=gnu11 -O2 -g3 -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -MMD -MP
 LDFLAGS := $(ARCH) -nostartfiles -static -Tlinker_script.ld -Wl,--gc-sections,--entry,Reset_Handler,-Map,$(CONFIG)/$(TARGET).map,--print-memory-usage
@@ -77,7 +75,7 @@ NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 FORCE:
 $(CONFIG)/.compiler-flags: FORCE
 	@mkdir -p $(CONFIG)
-	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) CFLAGS=$(CFLAGS)' > $@.tmp
+	@printf '%s\n' 'LVGL=8.4.0 NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) CFLAGS=$(CFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 

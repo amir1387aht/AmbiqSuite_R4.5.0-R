@@ -55,16 +55,6 @@ void *lv_mem_alloc(size_t n)
     return n ? app_malloc(n) : &zero_mem;
 }
 
-void *lv_mem_ssram_alloc(size_t n)
-{
-    return n ? app_malloc_shared(n) : &zero_mem;
-}
-
-void *lv_mem_external_alloc(size_t n)
-{
-    return lv_mem_ssram_alloc(n);
-} /* No PSRAM. */
-
 void lv_mem_free(void *p)
 {
     if (p != &zero_mem)
@@ -86,45 +76,25 @@ lv_res_t lv_mem_test(void)
     return zero_mem == ZERO_MEM_SENTINEL && app_memory_check() ? LV_RES_OK : LV_RES_INV;
 }
 
-static void monitor(lv_mem_monitor_t *m, bool shared_only)
+static void monitor(lv_mem_monitor_t *m)
 {
     app_memory_pool_stats_t cpu, shared;
     app_memory_stats(&cpu, &shared);
     lv_memset_00(m, sizeof(*m));
-    m->total_size        = shared.total + (shared_only ? 0 : cpu.total);
-    m->free_size         = shared.free + (shared_only ? 0 : cpu.free);
+    m->total_size        = shared.total + cpu.total;
+    m->free_size         = shared.free + cpu.free;
     m->free_biggest_size = shared.largest;
-    if (!shared_only && cpu.largest > m->free_biggest_size)
+    if (cpu.largest > m->free_biggest_size)
         m->free_biggest_size = cpu.largest;
-    m->free_cnt = shared.free_blocks + (shared_only ? 0 : cpu.free_blocks);
-    m->used_cnt = shared.used_blocks + (shared_only ? 0 : cpu.used_blocks);
+    m->free_cnt = shared.free_blocks + cpu.free_blocks;
+    m->used_cnt = shared.used_blocks + cpu.used_blocks;
     m->used_pct = 100 - 100u * m->free_size / m->total_size;
     m->frag_pct = m->free_size ? 100 - 100u * m->free_biggest_size / m->free_size : 0;
 }
 
 void lv_mem_monitor(lv_mem_monitor_t *m)
 {
-    monitor(m, false);
-}
-
-void lv_mem_ssram_monitor(lv_mem_monitor_t *m)
-{
-    monitor(m, true);
-}
-
-void lv_mem_external_monitor(lv_mem_monitor_t *m)
-{
-    monitor(m, true);
-}
-
-void *lv_mem_font_glyph_alloc(uint32_t n)
-{
-    return lv_mem_ssram_alloc(n);
-}
-
-void *lv_mem_font_info_alloc(uint32_t n)
-{
-    return lv_mem_alloc(n);
+    monitor(m);
 }
 
 /**

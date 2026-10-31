@@ -5,8 +5,7 @@
       "includePath": [
         "${workspaceRoot}/src/**",
         "${workspaceRoot}/libs/gpu_port",
-        "${workspaceRoot}/../../../../../../third_party/LVGL/lvgl",
-        "${workspaceRoot}/../../../../../../third_party/LVGL/ambiq_support"
+        "${workspaceRoot}/libs/lvgl84"
       ],
       "defines": [
         "AM_PART_APOLLO4L",

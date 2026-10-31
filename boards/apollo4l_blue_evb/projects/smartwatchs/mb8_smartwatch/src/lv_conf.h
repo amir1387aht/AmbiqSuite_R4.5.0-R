@@ -1,6 +1,6 @@
 /**
  * @file lv_conf.h
- * Application settings adapted to the SDK Ambiq LVGL v8.1.0 fork
+ * Application settings for upstream LVGL v8.4.0 and the watch NemaP draw context
  */
 
 /*
@@ -53,20 +53,10 @@
 
 /*1: use custom malloc/free, 0: use the built-in `lv_mem_alloc()` and `lv_mem_free()`*/
 #define LV_MEM_CUSTOM 0
-/* Actual application pool ranges come from the linker after static data.
- * These are hardware size ceilings for TLSF indexing, NOT extra reservations.
- * libc, LVGL and Nema share capacity; no graphics buffers grow with the heap. */
-#define LV_MEM_TCM_SIZE (384UL * 1024UL)
-#define LV_MEM_SSRAM_SIZE (1024UL * 1024UL)
-#define LV_MEM_PSRAM_ADR 0
-#define LV_MEM_PSRAM_SIZE 0
-#define LV_USE_GPU_AMBIQ_NEMA 1
-#define LV_AMBIQ_FONT_REALIGN_BITMAP 0
-#define LV_USE_AMBIQ_PERF_MONITOR_REFINED 0
-#define LV_AMBIQ_NEMA_IMAGE_SYNC 1
-#define LV_AMBIQ_FB_RESX 192
-#define LV_AMBIQ_FB_RESY 490
-
+/* app_memory owns the real linker-sized TCM/shared arenas. LV_MEM_SIZE is
+ * TLSF's indexing ceiling, not a separate LVGL heap or framebuffer reservation.
+ * Project-local lv_mem.c adapts the standard 8.4 API to the application heaps. */
+#define LV_MEM_SIZE (1024UL * 1024UL)
 
 /*Number of the intermediate memory buffer used during rendering and other internal processing mechanisms.
  *You will see an error log message if there wasn't enough buffers. */
@@ -175,8 +165,8 @@
  * GPU
  *-----------*/
 
-/*Use TSi's (aka Think Silicon) acceleration library NemaGFX */
-/* This SDK fork uses LV_USE_GPU_AMBIQ_NEMA above, not LV_USE_NEMA_GFX. */
+/* Apollo4l NemaP acceleration uses watch_gpu_draw_ctx_init in lvgl_display.c.
+ * It is not one of upstream LVGL's built-in GPU backends. */
 
 /*Use Arm's 2D acceleration library Arm-2D */
 #define LV_USE_GPU_ARM2D 0
