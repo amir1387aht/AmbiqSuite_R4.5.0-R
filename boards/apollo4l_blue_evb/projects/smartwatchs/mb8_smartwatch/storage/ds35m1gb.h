@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#define DS35_MAX_CLOCK_HZ    83000000u
 #define DS35_PAGE            2048u
 #define DS35_OOB             128u
 #define DS35_PAGES_PER_BLOCK 64u
@@ -34,8 +35,12 @@ struct ds35_bus
      * Exactly one of tx/rx can be non-NULL. Return 0 or a negative error.
      * Implementations must finish/abort DMA before returning, including failure.
      */
-    int (*transfer)(void *, const uint8_t *, size_t, const uint8_t *, uint8_t *, size_t);
+    int (*transfer)(void *, const uint8_t *, size_t, const uint8_t *, uint8_t *, size_t, unsigned);
     void (*delay_us)(void *, uint32_t);
+    /* Data width only: all commands/addresses remain x1. */
+    unsigned data_width;
+    /* Called only AFTER E5 A1 identity and QE/ECC are read-verified. */
+    int (*quad_ready)(void *, bool);
 };
 
 struct ds35_nand
@@ -43,6 +48,8 @@ struct ds35_nand
     struct ds35_bus bus;
     uint32_t        first_block, block_count;
     bool            ready, writable, fault;
+    bool            feature_saved;
+    uint8_t         saved_feature;
     uint32_t        corrected_reads, uncorrectable_reads;
     /* One shared-SRAM page bounce buffer, retained until DMA completes. */
     _Alignas(32) uint8_t page[DS35_PAGE + DS35_OOB];
@@ -52,6 +59,7 @@ struct ds35_nand
 
 /* Caller serializes every operation. Probe is non-destructive: no unlock/erase. */
 int ds35_probe(struct ds35_nand *, const struct ds35_bus *, uint32_t first, uint32_t count);
+int ds35_shutdown(struct ds35_nand *);
 int ds35_allow_writes(struct ds35_nand *);
 int ds35_read(
     struct ds35_nand *, uint32_t page, void *data, size_t bytes, void *tags, size_t tag_bytes);

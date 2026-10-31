@@ -10,6 +10,10 @@ SIZE := $(TOOLCHAIN)-size
 JOBS ?= 8
 GPU_PROFILE ?= 0
 WATCH_NAND_YAFFS2 ?= 0
+WATCH_NAND_MSPI_QUAD ?= 1
+ifneq ($(filter $(WATCH_NAND_MSPI_QUAD),0 1),$(WATCH_NAND_MSPI_QUAD))
+$(error WATCH_NAND_MSPI_QUAD must be 0 or 1)
+endif
 ifneq ($(filter $(WATCH_NAND_YAFFS2),0 1),$(WATCH_NAND_YAFFS2))
 $(error WATCH_NAND_YAFFS2 must be 0 or 1)
 endif
@@ -63,6 +67,11 @@ SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(AMBIQ_SRC) $(NEMA_SRC) $(UTIL_SRC) $
 # Additive storage port: no startup calls and no LVGL/display dependencies.
 ifeq ($(WATCH_NAND_YAFFS2),1)
 NAND_SRC := $(wildcard ../storage/*.c ../storage/yaffs2/*.c)
+ifeq ($(WATCH_NAND_MSPI_QUAD),1)
+NAND_SRC := $(filter-out ../storage/mb8_nand_iom.c,$(NAND_SRC))
+else
+NAND_SRC := $(filter-out ../storage/mb8_nand_mspi.c ../storage/mb8_nand_mspi_plan.c,$(NAND_SRC))
+endif
 SRC += $(NAND_SRC)
 endif
 # Strip leading ../ segments rather than allowing paths to escape CONFIG.
@@ -75,7 +84,7 @@ INCLUDE_DIRS += $(NEMA_DIR)/NemaGFX_SDK/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/common/m
 INCLUDE_DIRS += $(APP_DIRS) ../storage
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
 CPPFLAGS += -DWATCH_NATIVE_RGB565=1 -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_COPY=$(GPU_COPY) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
-CPPFLAGS += -DWATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2)
+CPPFLAGS += -DWATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) -DWATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD)
 ifeq ($(WATCH_NAND_YAFFS2),1)
 CPPFLAGS += -I../storage/yaffs2 -DCONFIG_YAFFS_DIRECT -DCONFIG_YAFFS_YAFFS2
 CPPFLAGS += -DCONFIG_YAFFS_DEFINES_TYPES -DCONFIG_YAFFS_PROVIDE_DEFS -DCONFIG_YAFFSFS_PROVIDE_VALUES
@@ -98,7 +107,7 @@ NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 FORCE:
 $(CONFIG)/.compiler-flags: FORCE
 	@mkdir -p $(CONFIG)
-	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) CFLAGS=$(CFLAGS)' > $@.tmp
+	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) WATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD) CFLAGS=$(CFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 

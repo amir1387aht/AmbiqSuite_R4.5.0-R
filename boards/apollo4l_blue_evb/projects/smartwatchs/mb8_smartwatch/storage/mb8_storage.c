@@ -3,7 +3,7 @@
  */
 #include "mb8_storage.h"
 #include "mb8_nand_board.h"
-#include "mb8_nand_iom.h"
+#include "mb8_nand_transport.h"
 #include "yaffs_guts.h"
 #include "yaffsfs.h"
 #include "yaffs_packedtags2.h"
@@ -253,17 +253,18 @@ int mb8_storage_mount(bool read_only)
     }
     owner = xTaskGetCurrentTaskHandle();
     struct ds35_bus bus;
-    int             r = mb8_nand_iom_open(&bus);
+    int             r = mb8_nand_bus_open(&bus);
     if (r < 0)
     {
-        status_text = "NAND bus/pin configuration incomplete or IOM unavailable";
+        status_text = "NAND dedicated bus/pin/clock configuration unconfirmed or unavailable";
         return -1;
     }
     r = ds35_probe(&nand, &bus, mb8_nand_board.first_block, mb8_nand_board.block_count);
     if (r < 0)
     {
         status_text = "NAND probe/JEDEC ID mismatch (expected E5 A1)";
-        mb8_nand_iom_close();
+        ds35_shutdown(&nand);
+        mb8_nand_bus_close();
         return -1;
     }
     /* Always scan read-only FIRST, with writes locked at the NAND layer too.
@@ -304,7 +305,8 @@ int mb8_storage_mount(bool read_only)
         if (dev.is_mounted)
             yaffs_unmount2("/nand", 1);
         status_text = "NAND read-only scan/checkpoint failed; no writes enabled";
-        mb8_nand_iom_close();
+        ds35_shutdown(&nand);
+        mb8_nand_bus_close();
         return -1;
     }
     if (!read_only)
@@ -316,7 +318,8 @@ int mb8_storage_mount(bool read_only)
         {
             nand.writable = false;
             yaffs_unmount2("/nand", 1);
-            mb8_nand_iom_close();
+            ds35_shutdown(&nand);
+            mb8_nand_bus_close();
             status_text = "NAND unlock/remount failed";
             return -1;
         }
@@ -334,8 +337,14 @@ int mb8_storage_unmount(void)
      */
     if (yaffs_unmount("/nand") < 0)
         return -1;
-    nand.writable = false;
-    mb8_nand_iom_close();
+    nand.writable       = false;
+    int shutdown_result = ds35_shutdown(&nand);
+    mb8_nand_bus_close();
+    if (shutdown_result < 0)
+    {
+        status_text = "NAND QE/ECC restore failed; reset/recovery required";
+        return -1;
+    }
     status_text = "NAND unmounted";
     return 0;
 }

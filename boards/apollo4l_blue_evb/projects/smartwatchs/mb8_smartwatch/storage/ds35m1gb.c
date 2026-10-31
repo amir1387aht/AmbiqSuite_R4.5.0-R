@@ -1,16 +1,21 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  * DS35X1GBXXX rev07, https://www.dosilicon.com/resources/SPI%20NAND/DS35X1GBXXX_rev07.pdf
- * x1 SPI, ECC8/512 enabled; never writes parity bytes 0x840..0x87f.
+ * x1 controls, optional1-1-4 quad data, ECC8/512 enabled; never writes parity bytes 0x840..0x87f.
  */
 #include "ds35m1gb.h"
 #include <string.h>
 
-static int transfer(
-    struct ds35_nand *n, const uint8_t *h, size_t hn, const uint8_t *tx, uint8_t *rx, size_t len)
+static int transfer(struct ds35_nand *n,
+    const uint8_t                    *h,
+    size_t                            hn,
+    const uint8_t                    *tx,
+    uint8_t                          *rx,
+    size_t                            len,
+    unsigned                          width)
 {
     if (n->fault)
         return DS35_NOT_READY;
-    int r = n->bus.transfer(n->bus.ctx, h, hn, tx, rx, len);
+    int r = n->bus.transfer(n->bus.ctx, h, hn, tx, rx, len, width);
     if (r < 0)
         n->fault = true; /* Unknown operation completion: never replay. */
     return r;
@@ -18,19 +23,19 @@ static int transfer(
 
 static int command(struct ds35_nand *n, uint8_t op)
 {
-    return transfer(n, &op, 1, NULL, NULL, 0);
+    return transfer(n, &op, 1, NULL, NULL, 0, 1);
 }
 
 static int feature(struct ds35_nand *n, uint8_t addr, uint8_t *value)
 {
     uint8_t h[] = {0x0f, addr};
-    return transfer(n, h, 2, NULL, value, 1);
+    return transfer(n, h, 2, NULL, value, 1, 1);
 }
 
 static int set_feature(struct ds35_nand *n, uint8_t addr, uint8_t value)
 {
     uint8_t h[] = {0x1f, addr};
-    return transfer(n, h, 2, &value, NULL, 1);
+    return transfer(n, h, 2, &value, NULL, 1, 1);
 }
 
 static int wait_ready(struct ds35_nand *n, uint32_t max_us, uint8_t *status)
@@ -54,7 +59,7 @@ static int wait_ready(struct ds35_nand *n, uint32_t max_us, uint8_t *status)
 static int row_command(struct ds35_nand *n, uint8_t op, uint32_t row)
 {
     uint8_t h[] = {op, (uint8_t)(row >> 16), (uint8_t)(row >> 8), (uint8_t)row};
-    return transfer(n, h, 4, NULL, NULL, 0);
+    return transfer(n, h, 4, NULL, NULL, 0, 1);
 }
 
 static bool block_valid(const struct ds35_nand *n, uint32_t block)
@@ -93,8 +98,8 @@ static int cache_read(struct ds35_nand *n, uint16_t col, uint8_t *buf, size_t si
 {
     if (col > DS35_PAGE + DS35_OOB || size > DS35_PAGE + DS35_OOB - col)
         return DS35_EINVAL;
-    uint8_t h[] = {0x03, (uint8_t)(col >> 8), (uint8_t)col, 0};
-    return transfer(n, h, 4, NULL, buf, size);
+    uint8_t h[] = {n->bus.data_width == 4 ? 0x6b : 0x03, (uint8_t)(col >> 8), (uint8_t)col, 0};
+    return transfer(n, h, 4, NULL, buf, size, n->bus.data_width);
 }
 
 static int write_enable(struct ds35_nand *n)
@@ -108,7 +113,9 @@ static int write_enable(struct ds35_nand *n)
 
 int ds35_probe(struct ds35_nand *n, const struct ds35_bus *bus, uint32_t first, uint32_t count)
 {
-    if (!n || !bus || !bus->transfer || !bus->delay_us || !count || first >= DS35_BLOCKS ||
+    if (!n || !bus || !bus->transfer || !bus->delay_us ||
+        (bus->data_width != 1 && bus->data_width != 4) ||
+        (bus->data_width == 4 && !bus->quad_ready) || !count || first >= DS35_BLOCKS ||
         count > DS35_BLOCKS - first)
         return DS35_EINVAL;
     memset(n, 0, sizeof(*n));
@@ -119,20 +126,36 @@ int ds35_probe(struct ds35_nand *n, const struct ds35_bus *bus, uint32_t first, 
     int     r = command(n, 0xff);
     if (r < 0 || (r = wait_ready(n, 2000, &status)) < 0)
         return r;
-    if ((r = transfer(n, h, 2, NULL, id, 2)) < 0)
+    if ((r = transfer(n, h, 2, NULL, id, 2, 1)) < 0)
         return r;
     if (id[0] != 0xe5 || id[1] != 0xa1)
         return DS35_ID;
-    /* Read array mode, ECC on, QE off. Never touch OTP protection bits. */
+    /* Read array mode, ECC on; QE follows the explicit backend capability. */
     if ((r = feature(n, 0xb0, &status)) < 0)
         return r;
     if (status & 0xc0)
-        return DS35_NOT_READY; /* OTP enabled/locked needs operator review. */
-    if ((r = set_feature(n, 0xb0, (status | 0x10) & ~1u)) < 0 ||
-        (r = feature(n, 0xb0, &status)) < 0)
+        return DS35_NOT_READY;
+    n->saved_feature = status;
+    n->feature_saved = true;
+    if ((r = set_feature(n, 0xb0, ((status | 0x10) & ~1u) | (bus->data_width == 4 ? 1u : 0u))) <
+            0 ||
+        (r = feature(n, 0xb0, &status)) < 0 ||
+        (status & 0x51) != (bus->data_width == 4 ? 0x11 : 0x10))
+    {
+        int error = r < 0 ? r : DS35_IO;
+        /* A readback mismatch can leave a healthy transport. Restore the saved
+         * volatile feature before returning, including standalone probe callers.
+         * A transport fault cannot be replayed; backend is already poisoned.
+         */
+        if (!n->fault)
+            ds35_shutdown(n);
+        return error;
+    }
+    if (bus->data_width == 4 && (r = bus->quad_ready(bus->ctx, true)) < 0)
+    {
+        n->fault = true;
         return r;
-    if ((status & 0x51) != 0x10)
-        return DS35_IO;
+    }
     n->ready = true;
     return DS35_OK;
 }
@@ -265,9 +288,9 @@ int ds35_program(
     memset(n->page, 0xff, DS35_PROGRAM_BYTES);
     memcpy(n->page, data, bytes);
     memcpy(n->page + DS35_PAGE + DS35_TAG_OFFSET, tags, tn);
-    uint8_t h[] = {0x02, 0, 0}, status;
+    uint8_t h[] = {n->bus.data_width == 4 ? 0x32 : 0x02, 0, 0}, status;
     if ((r = write_enable(n)) < 0 ||
-        (r = transfer(n, h, 3, n->page, NULL, DS35_PROGRAM_BYTES)) < 0 ||
+        (r = transfer(n, h, 3, n->page, NULL, DS35_PROGRAM_BYTES, n->bus.data_width)) < 0 ||
         (r = row_command(n, 0x10, page)) < 0 || (r = wait_ready(n, 5000, &status)) < 0)
         return r;
     return (status & 8) ? DS35_IO : DS35_OK; /* tPROG max700us. */
@@ -305,12 +328,20 @@ int ds35_mark_bad(struct ds35_nand *n, uint32_t block)
         return r;
     if ((r = set_feature(n, 0xb0, config & ~0x10u)) < 0)
         return r;
+    if ((r = feature(n, 0xb0, &status)) < 0 || status != (uint8_t)(config & ~0x10u))
+    {
+        if (!n->fault)
+            set_feature(n, 0xb0, config);
+        n->fault = true;
+        return DS35_IO;
+    }
     int success = 0;
     for (uint32_t i = 0; i < 2 && !n->fault; i++)
     {
-        uint8_t h[] = {0x02, 0x08, 0x00};
+        uint8_t h[] = {n->bus.data_width == 4 ? 0x32 : 0x02, 0x08, 0x00};
         n->page[0]  = 0;
-        if ((r = write_enable(n)) < 0 || (r = transfer(n, h, 3, n->page, NULL, 1)) < 0 ||
+        if ((r = write_enable(n)) < 0 ||
+            (r = transfer(n, h, 3, n->page, NULL, 1, n->bus.data_width)) < 0 ||
             (r = row_command(n, 0x10, block * 64 + i)) < 0 ||
             (r = wait_ready(n, 5000, &status)) < 0)
             break;
@@ -329,4 +360,31 @@ int ds35_mark_bad(struct ds35_nand *n, uint32_t block)
         return DS35_IO;
     }
     return success ? DS35_OK : DS35_IO;
+}
+
+int ds35_shutdown(struct ds35_nand *n)
+{
+    if (!n)
+        return DS35_EINVAL;
+    n->writable = false;
+    if (n->fault)
+        return DS35_NOT_READY;
+    if (n->feature_saved)
+    {
+        uint8_t value;
+        int     r = set_feature(n, 0xb0, n->saved_feature);
+        if (r < 0 || (r = feature(n, 0xb0, &value)) < 0 || value != n->saved_feature)
+        {
+            n->fault = true;
+            return DS35_IO;
+        }
+        if (n->bus.data_width == 4 && n->bus.quad_ready(n->bus.ctx, false) < 0)
+        {
+            n->fault = true;
+            return DS35_IO;
+        }
+        n->feature_saved = false;
+    }
+    n->ready = false;
+    return DS35_OK;
 }

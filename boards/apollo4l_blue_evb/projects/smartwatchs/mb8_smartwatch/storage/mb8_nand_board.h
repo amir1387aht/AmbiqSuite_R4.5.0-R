@@ -11,20 +11,34 @@
 #define MB8_NAND_PART_GEOMETRY_CONFIRMED 0
 #define MB8_NAND_PARTITION_CONFIRMED     0
 #define MB8_NAND_WRITES_AUTHORIZED       0
-/* A dedicated IOM is required: no display, touch, or other bus sharing. */
-#define MB8_NAND_IOM        MB8_NAND_UNKNOWN
-#define MB8_NAND_CS_CHANNEL MB8_NAND_UNKNOWN
-#define MB8_NAND_SCK_PIN    MB8_NAND_UNKNOWN
-#define MB8_NAND_SCK_FUNC   MB8_NAND_UNKNOWN
-#define MB8_NAND_MOSI_PIN   MB8_NAND_UNKNOWN
-#define MB8_NAND_MOSI_FUNC  MB8_NAND_UNKNOWN
-#define MB8_NAND_MISO_PIN   MB8_NAND_UNKNOWN
-#define MB8_NAND_MISO_FUNC  MB8_NAND_UNKNOWN
-#define MB8_NAND_CS_PIN     MB8_NAND_UNKNOWN
-#define MB8_NAND_CS_FUNC    MB8_NAND_UNKNOWN
+/* Dedicated controller only: MSPI1/display sharing is forbidden.
+ * Existing MOSI/MISO names mean bidirectional quad IO0/IO1 in MSPI mode. */
+#define MB8_NAND_MSPI     MB8_NAND_UNKNOWN
+#define MB8_NAND_IO2_PIN  MB8_NAND_UNKNOWN
+#define MB8_NAND_IO2_FUNC MB8_NAND_UNKNOWN
+#define MB8_NAND_IO3_PIN  MB8_NAND_UNKNOWN
+#define MB8_NAND_IO3_FUNC MB8_NAND_UNKNOWN
+/* Quad lanes2/3 need verified pull-ups, NOT hard ties to VCC. */
+#define MB8_NAND_QSPI_IO23_PULLUPS_CONFIRMED 0
+#define MB8_NAND_QSPI_MAX_CLOCK_VALIDATED    0
+/* Standard MSPI SCK=lane8; optional alternate SCK=lane4, board verified only. */
+#define MB8_NAND_MSPI_CLKOND4 0
+/* All known display/power/reset pads are forbidden to this dedicated backend. */
+#define MB8_NAND_RESERVED_PINS {11, 37, 38, 39, 40, 41, 42, 43, 44, 45, 86}
+#define MB8_NAND_IOM           MB8_NAND_UNKNOWN
+#define MB8_NAND_CS_CHANNEL    MB8_NAND_UNKNOWN
+#define MB8_NAND_SCK_PIN       MB8_NAND_UNKNOWN
+#define MB8_NAND_SCK_FUNC      MB8_NAND_UNKNOWN
+#define MB8_NAND_MOSI_PIN      MB8_NAND_UNKNOWN
+#define MB8_NAND_MOSI_FUNC     MB8_NAND_UNKNOWN
+#define MB8_NAND_MISO_PIN      MB8_NAND_UNKNOWN
+#define MB8_NAND_MISO_FUNC     MB8_NAND_UNKNOWN
+#define MB8_NAND_CS_PIN        MB8_NAND_UNKNOWN
+#define MB8_NAND_CS_FUNC       MB8_NAND_UNKNOWN
 /* WP#/HOLD# must be verified tied high externally for the x1 backend. */
 #define MB8_NAND_WP_HOLD_HIGH_CONFIRMED 0
-/* 12MHz bring-up; validated dedicated IOM may use 48MHz, never >48MHz here.
+/* 12MHz bring-up; verified dedicated MSPI/IOM may use48MHz, never >48MHz.
+ * QSPI_MAX_CLOCK_VALIDATED selects48MHz after strict ID/QE verification.
  * DS35M1GB limit is 83MHz. 96MHz MSPI would be out of specification.
  */
 #define MB8_NAND_CLOCK_HZ 12000000u
@@ -43,6 +57,9 @@ struct mb8_nand_board_config
     uint32_t part_geometry_confirmed;
     uint32_t partition_confirmed;
     uint32_t writes_authorized;
+    uint32_t mspi;
+    uint32_t io2_pin, io2_func, io3_pin, io3_func;
+    uint32_t qspi_io23_pullups_confirmed, qspi_max_clock_validated, mspi_clkond4;
     uint32_t iom;
     uint32_t cs_channel;
     uint32_t sck_pin;

@@ -52,13 +52,19 @@ static void done(void *ctx, uint32_t status)
     completed         = true;
 }
 
-static int xfer(
-    void *ctx, const uint8_t *header, size_t hn, const uint8_t *tx, uint8_t *rx, size_t len)
+static int xfer(void *ctx,
+    const uint8_t    *header,
+    size_t            hn,
+    const uint8_t    *tx,
+    uint8_t          *rx,
+    size_t            len,
+    unsigned          width)
 {
     (void)ctx;
     if (!iom || poisoned)
         return DS35_NOT_READY;
-    if (!header || !hn || hn > 5 || len > sizeof(bounce) || (tx && rx) || (len && !tx && !rx))
+    if (width != 1 || !header || !hn || hn > 5 || len > sizeof(bounce) || (tx && rx) ||
+        (len && !tx && !rx))
         return DS35_EINVAL;
     am_hal_iom_transfer_t t       = {0};
     t.uPeerInfo.ui32SpiChipSelect = mb8_nand_board.cs_channel;
@@ -182,6 +188,6 @@ int mb8_nand_iom_open(struct ds35_bus *bus)
         return DS35_IO;
     }
     am_util_delay_us(5000); /* VCC must already be stable; tPU >=5ms. */
-    *bus = (struct ds35_bus){.transfer = xfer, .delay_us = delay};
+    *bus = (struct ds35_bus){.transfer = xfer, .delay_us = delay, .data_width = 1};
     return DS35_OK;
 }

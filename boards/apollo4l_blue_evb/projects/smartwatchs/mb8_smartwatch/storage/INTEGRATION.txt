@@ -1,4 +1,4 @@
-MI BAND 8 NAND / YAFFS2 DIRECT PORT
+MI BAND 8 NAND / YAFFS2 DIRECT PORT: MSPI 1-1-4 QUAD
 ================================
 Status: opt-in software port, NOT a validated on-watch storage driver.
 No startup calls, automatic format, guessed pins, or default partition are added.
@@ -39,10 +39,21 @@ DS35X1GBXXX rev07 (2026-07-15), DS35M1GB-IB (WSON8x6):
 - Whole-page program loads2048+64 bytes in one command, followed by one execute;
   never separately programs tags in an ECC segment. Marker writes disable ECC
   temporarily, update only OOB[0], then restore and verify B0h.
-- Commands used: FF reset; 0F/1F get/set feature; 06 WREN;13 page-to-cache;
-  03 cache read with2-byte column+dummy;02 program load;10 execute;D8 erase.
-  QE B0[0] is off in this x1 backend. Part also supports6B quad cache read,
-  32 quad program load,34 quad random program (NOT implemented by IOM backend).
+- Quad commands:6B cache read, opcode x1 +2 column bytes x1 +8 dummy CLOCKS
+  +data x4;32 program load, opcode x1 +2 column bytes x1 +data x4, NO dummy
+  clocks/write latency. Hardware CS stays asserted across each main+spare burst.
+  This is1-1-4 QSPI, NOT4-4-4 QPI or1-4-4 addressing. FF reset,0F/1F features,
+  06 WREN,9F ID,13 page-to-cache,10 execute andD8 erase remain x1.
+  B0[0] QE is enabled/read-verified only after exact E5 A1 ID/geometry guards.
+  Original B0 is saved and restored/read-verified on healthy probe failure or
+  unmount. RAW BBM operations preserve QE while temporarily disabling ECC.
+  Legacy IOM fallback uses03/02 x1;34 random quad programming is not used.
+- Do NOT use133MHz: manufacturer family table4.7 specifies83MHz for1.8V M
+  and104MHz for3.3V Q, not133MHz. Apollo4l supports96/48/32/24/... MHz, so
+  48MHz is its highest supported clock within this exact83MHz part limit.
+  E5 F1/3.3V is rejected, not silently substituted. Bus starts at12MHz; the
+  explicit validated-max opt-in selects48MHz after ID/QE verification. Normal
+  HAL CLOCK_CONFIG handles clock edges/capture; no divider/register overclock.
 - Datasheet maxima: ECC read130us, program700us, erase10ms, reset during erase
   500us; power-up wait5ms; CS deselect>=100ns. Driver margins: read/reset2ms,
   program5ms, erase20ms, and 1us between SPI transfers. Poll iteration limits
@@ -51,12 +62,20 @@ DS35X1GBXXX rev07 (2026-07-15), DS35M1GB-IB (WSON8x6):
 SAFE ENABLE PROCEDURE
 1. Keep the branch isolated and back up any existing watch NAND data externally.
    Reconcile YAFFS licensing BEFORE distributing enabled firmware.
-2. Edit ONLY storage/mb8_nand_board.h for the board choices: verify 1.8V VCC and
-   Apollo pad I/O voltage compatibility, IOM instance, hardware CS channel,
-   SCK/MOSI/MISO/CS pin numbers AND correct peripheral function selectors.
-   Confirm WP#/HOLD# held HIGH externally. Do not infer wiring from EVB pins.
-   Select an UNUSED, DEDICATED IOM: the driver does not share a sensor/display bus.
-   A pin that only supports MSPI cannot be made into IOM by changing a number.
+2. Edit ONLY storage/mb8_nand_board.h for board choices: verify1.8V VCC and
+   Apollo pad I/O voltage compatibility, a dedicated UNUSED MSPI0 or2, hardware
+   CS channel0/1, SCK, IO0/MOSI, IO1/MISO, IO2, IO3, CS numbers AND peripheral
+   selectors. All remain UNKNOWN. Verify pull-ups on IO2/3, NOT hard ties to VCC
+   (these become quad data lanes). Standard SCK is MSPI lane8; CLKOND4 selects
+   alternate lane4 only after routing verification. Driver checks the SDK's actual
+   per-pad function matrix and NCE source BEFORE any GPIO/controller activity.
+   MSPI1 and known display/power/reset pads11,37..45,86 are forbidden. The active
+   display uses MSPI1, CE0=86,SCK45,D0..3=37..40. Do not use reset/power aliases
+   41/42 as display CS/SCK. No BSP EVB pin assignment is guessed. If watch NAND
+   wiring cannot route all six signals to the SAME spare MSPI instance, this
+   hardware cannot use this quad backend without rewiring; pin edits cannot
+   change the silicon mux. Legacy IOM mode instead needs dedicated IOM pins and
+   WP#/HOLD# held high. Do not hard-tie lanes for the quad mode.
 3. Confirm chip marking/revision, geometry, and the independently backed-up,
    block-aligned YAFFS partition boundaries. Set FIRST_BLOCK and BLOCK_COUNT
    explicitly; no whole-chip default exists. Existing Xiaomi filesystems are NOT
@@ -64,12 +83,17 @@ SAFE ENABLE PROCEDURE
    At least16 blocks are required by this configuration;5 blocks are reserved
    for GC, and YAFFS also dynamically reserves checkpoint space.
 4. Set the corresponding *_CONFIRMED flags only after those checks. Leave
-   WRITES_AUTHORIZED=0. Start with12MHz; scope timings and verify signal integrity
-   before selecting24/48MHz. 48MHz is this IOM's maximum, not a measured result.
+   WRITES_AUTHORIZED=0. Default CLOCK_HZ=12MHz and QSPI_MAX_CLOCK_VALIDATED=0.
+   Scope timings and verify signal integrity before setting the latter to1,
+   selecting48MHz after probe. CLOCK_HZ values above12MHz also require that
+   validation; unsupported83/96/133MHz requests fail, never clamp silently.
+   This48MHz selection is an in-spec controller ceiling, not measured bandwidth.
 5. Build from project/gcc, e.g.:
-   PATH=/path/to/arm-gcc/bin:$PATH make -j6 WATCH_NAND_YAFFS2=1 CONFIG=bin-nand
+   PATH=/path/to/arm-gcc/bin:$PATH make -j6 WATCH_NAND_YAFFS2=1 WATCH_NAND_MSPI_QUAD=1 CONFIG=bin-nand
    Makefile keeps mount/unmount/open/read/write/fsync/close link-checked even though
    they are not called from startup. Do not use bin-nand on hardware yet.
+   WATCH_NAND_MSPI_QUAD=1 is the storage-enabled default;=0 builds legacy IOM.
+   WATCH_NAND_YAFFS2=0 still excludes ALL storage and leaves startup unchanged.
 6. Integrate an explicit call from ONE dedicated low-priority FreeRTOS storage
    worker after scheduler start: mb8_storage_mount(true). Print/check its return
    and mb8_storage_status(). It probes E5 A1 BEFORE permitting any writes.
@@ -97,13 +121,17 @@ SAFE ENABLE PROCEDURE
    power faults beyond the NAND's specified behavior; validate on the real watch.
 9. Resolve gcc/Makefile additions manually when merging with the LVGL8.4 branch.
    Storage includes no LVGL headers/types and changes no UI, allocator, panel,
-   startup, profiler, fonts, or FPS files. This branch is based on main d6786d9.
+   startup, profiler, fonts, or FPS files. This branch is based on storage00f74e4, whose base is main d6786d9.
 
 PERFORMANCE / RESOURCE CHOICES
-- Dedicated IOM x1 SPI DMA with shared-SRAM,32-byte-aligned CQ/data buffers.
-  Foreground polls HAL CQ completion without replacing any ISR. The RTOS can
-  preempt the worker. It is not asynchronous application I/O, and repeated page
-  calls consume worker CPU. Small status commands also use bounded CQ execution.
+- Dedicated MSPI quad DMA with shared-SRAM,32-byte-aligned1024B TCB and2176B
+  bounce buffers. Foreground polls HAL CQ completion without replacing any ISR.
+  Serial controls use bounded aligned blocking PIO; actual DEVICE_CONFIG and
+  PIOMIXED_CONFIG are both switched for serial/quad, preserving serial SI=D0,
+  SO=D1 (SEPIO=1), vs quad SEPIO=0. Read turnaround and write latency are
+  independent HAL fields: RX gets8 dummy clocks; TX gets none. Bulk data never
+  silently falls back to x1. The worker can be preempted but is synchronous,
+  not asynchronous application I/O. No XIP, DDR or display-controller sharing.
 - Explicit DAXI flush before submit; HAL callback invalidates after DMA. Caller
   buffers can be unaligned/in TCM; two bounded SRAM copies avoid DMA to unsafe
   user memory. Further zero-copy optimization requires proving memory ownership.
@@ -120,14 +148,18 @@ PERFORMANCE / RESOURCE CHOICES
   Raise it only after measuring remaining UI heap. No new independent sbrk heap.
 - Bus transaction timeout10ms, conservative NAND operation bounds above. An
   ambiguous bus/program timeout is never automatically replayed. On bus fault,
-  stop CQ/DMA/submodule, power-gate the dedicated IOM, retain static buffers,
+  stop CQ/DMA/submodule, power-gate the dedicated MSPI/IOM, retain static buffers,
   poison the transport, and REQUIRE FIRMWARE RESET before reopening. Do not
   power-cycle/retry into a potentially incomplete write without recovery review.
-- No measured bandwidth, actual DMA/pad behavior, or power-fail endurance claim.
-  MSPI quad can improve wire bandwidth but needs a verified spare MSPI controller,
-  routable pins, voltage/timing validation and a real backend. It is not silently
-  enabled, and96MHz is above this part's83MHz limit. This is not a claim of
-  maximum possible chip bandwidth or production readiness.
+- Any uncertain controller shutdown/interrupt-disable/power/deinitialize failure
+  poisons the backend, retains HAL ownership/static buffers and refuses reopen
+  until firmware reset. Powered-down MMIO is not accessed after deinitialize
+  failure. Healthy close restores B0/QE/ECC first; faulted transport cannot
+  promise feature restoration. Never assume an interrupted program completed.
+- No measured bandwidth, actual DMA/pad behavior or power-fail endurance claim.
+  Quad wire payload ceiling at48MHz is24MB/s before commands, array latency,
+  cache copies, polling, YAFFS metadata/GC and ECC; NOT a measured file rate.
+  Unknown physical routing remains a hardware blocker, not production readiness.
 
 LICENSE / SOURCE
 Official YAFFS2 Direct snapshot474b3acb927d27b2305618aaf24456b9d33fe91b:
@@ -145,24 +177,32 @@ DOES NOT establish compatibility of those vendor components. No firmware binary
 or legal compatibility warranty is included in the source commit.
 
 VALIDATION OF THIS SOURCE SNAPSHOT (NO ON-DEVICE TESTING)
-- ARM GCC14.2.1, -O2 hard-float Cortex-M4; both WATCH_NAND_YAFFS2=0 and1
-  fully compile/link with the real repository Apollo4l HAL/BSP and licensed
-  lib_nema_apollo4l_nemagfx.a; no firmware stubs. Existing SDK/app warnings remain.
-- Opt-in link has all mount/unmount/open/read/write/fsync/close entry points kept.
-  Main image text+data460224B vs412672B default (+47552B); static shared-SRAM
-  reservation+10912B, TCM data+16B. Linker reserves the remaining RAM for app heaps,
-  so its100% RAM-region summary is NOT100% live/static allocation.
-- External host-only ASan+UBSan NAND protocol suite: bounds/OOB isolation,
-  read-only guard, JEDEC mismatch, all ECC codes, factory second-page marker,
-  program/erase failure bits, runtime marking, bounded busy timeout, torn page.
-- Actual upstream YAFFS+adapter tested on external mock NAND: RO no writes,
-  RW files/fsync/checkpoint/remount, factory-bad-block skip, simulated process
-  death during a torn NAND page program, recovery of previously synced file,
-  scan-error refusal, and partition-boundary isolation. No sanitizer findings
-  remain after the documented unsigned-mask correction.
-- Default unconfirmed-board mount test confirms ZERO bus calls or media writes.
-- Host16-block fixture's peak YAFFS requested allocation49752B (host ABI), zero
-  live allocation after unmount. This is NOT an ARM runtime heap measurement,
-  whole-chip RAM estimate, timing result, or a hardware power-cut qualification.
-- Tests/harnesses and build outputs deliberately remain outside the git patch;
-  no tests directories or generated firmware binaries are published.
+- ARM GCC14.2.1, -O2 hard-float Cortex-M4, real repository Apollo4l HAL/BSP,
+  lib_nema_apollo4l_nemagfx.a and vendor archives; no firmware stubs. Builds:
+  WATCH_NAND_YAFFS2=0; WATCH_NAND_YAFFS2=1 WATCH_NAND_MSPI_QUAD=0; and
+  WATCH_NAND_YAFFS2=1 WATCH_NAND_MSPI_QUAD=1. Existing SDK/app warnings remain.
+  All public filesystem APIs remain link-checked. Default text+data412672B;
+  legacy IOM460888B; MSPI quad464456B (+51784B vs default). Linker reserves
+  remaining RAM for heaps;100% region summary is NOT100% live allocation.
+- External host-only ASan+UBSan compile the actual new MSPI backend, packet
+  planner and NAND core against a mock HAL/NAND: exact phases/opcodes/dummy
+  counts, main+tags/parity isolation, serial controls, readonly/bounds guards,
+  all ECC codes, RAW first/second-page BBM preserving QE/ECC, runtime marking,
+  program/erase failure bits, ID mismatch, max clock guards, QE restoration,
+  DMA alignment/cache flush, timeouts, phase/PIO/DMA/clock faults, torn program,
+  four shutdown-stage failures and reset-required refusal to reopen.
+- Separately extracted UNMODIFIED real vendor HAL mode configuration functions
+  tested against actual CMSIS register encodings with ASan+UBSan: CE0/CE1,
+  standard/alternate SCK, serial SEPIO=1 vs1-1-4 SEPIO=0, normal vsD4 PIO/DMA
+  mixed settings, serial opcode/address widths and quad output-pad mask.
+  Source check confirms independent RX-turnaround/TX-write-latency enable.
+- Default unconfirmed-board test confirms ZERO GPIO/controller/NAND activity.
+- Original storage branch additionally tested actual upstream YAFFS+adapter on
+  external mock NAND: RO no writes, files/fsync/checkpoint/remount, factory-bad
+  skip, process death during torn page, recovery of previously synced file,
+  scan-error refusal and partition isolation. Those results are inherited;
+  this quad change's fault tests are protocol/transport, not hardware powercuts.
+- Original host16-block fixture peaked at49752B YAFFS requested allocation,
+  zero live after unmount. NOT an ARM runtime heap/whole-chip RAM/timing result.
+- Tests/harnesses and build outputs deliberately stay outside git; no tests
+  directories, generated firmware binaries or extra markdown are published.
