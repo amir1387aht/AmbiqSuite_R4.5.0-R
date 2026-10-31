@@ -1,6 +1,7 @@
 #include "watch_glyph_cache.h"
 #include "watch_glyph_cache_core.h"
 #include "watch_gpu.h"
+#include "app_memory.h"
 #include "lvgl.h"
 #include "am_mcu_apollo.h"
 #include "am_util.h"
@@ -9,7 +10,7 @@ static watch_glyph_cache_t glyph_cache;
 
 void watch_gpu_glyph_cache_init(void)
 {
-    uint8_t *arena = lv_mem_ssram_alloc(WATCH_GLYPH_ARENA_BYTES);
+    uint8_t *arena = app_malloc_shared(WATCH_GLYPH_ARENA_BYTES);
     watch_glyph_cache_init(&glyph_cache, arena, arena ? WATCH_GLYPH_ARENA_BYTES : 0);
     am_util_stdio_printf(
         "Nema A4 glyph cache: %lu bytes in shared SRAM\r\n", (unsigned long)glyph_cache.capacity);

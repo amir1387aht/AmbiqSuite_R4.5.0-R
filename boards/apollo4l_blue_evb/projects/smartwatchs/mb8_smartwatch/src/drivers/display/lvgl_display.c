@@ -1,5 +1,6 @@
 #include "./lvgl_display.h"
-#include "lv_gpu_ambiq_nema.h"
+#include "watch_gpu_renderer.h"
+#include "app_memory.h"
 #include "nema_error.h"
 #include "nema_graphics.h"
 #include "nema_sys_defs.h"
@@ -31,7 +32,6 @@ static volatile bool    display_awake;
 static volatile uint8_t requested_brightness = 175;
 static uint8_t          applied_brightness   = 175;
 static lv_indev_drv_t   indev_drv;
-static img_obj_t gpu_framebuffer = {.w = display_width, .h = DRAW_BUF_LINES, .format = NEMA_RGB565};
 /* Keep two complete RGB565 panel images independent of the small GPU buffers.
  * Submit dirty rows only on LVGL's last flush: the TE-driven panel transport
  * sees one transfer per refresh, not one panel refresh per 64-line stripe. */
@@ -50,7 +50,7 @@ void lvgl_display_init(void *pvParameters)
     configASSERT(panel_dma_complete != NULL);
     memset(panel_pixels, 0, sizeof(panel_pixels));
     watch_gpu_cpu_write_complete();
-    void *back_alloc = lv_mem_ssram_alloc(sizeof(panel_pixels) + 31u);
+    void *back_alloc = app_malloc_shared(sizeof(panel_pixels) + 31u);
     if (!back_alloc)
     {
         am_util_stdio_printf("Second panel frame allocation failed; stopped.\r\n");
@@ -67,14 +67,15 @@ void lvgl_display_init(void *pvParameters)
     lv_disp_draw_buf_init(&draw_buf, display_buffer1, display_buffer2, DRAW_BUF_SIZE);
 
     lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res      = display_width;
-    disp_drv.ver_res      = display_height;
-    disp_drv.flush_cb     = disp_flush;
-    disp_drv.gpu_wait_cb  = lv_gpu_ambiq_nema_wait;
-    disp_drv.draw_buf     = &draw_buf;
-    disp_drv.user_data    = &gpu_framebuffer;
-    disp_drv.full_refresh = 0;
-    disp_drv.rounder_cb   = lv_rounder_cb;
+    disp_drv.hor_res         = display_width;
+    disp_drv.ver_res         = display_height;
+    disp_drv.flush_cb        = disp_flush;
+    disp_drv.draw_ctx_init   = watch_gpu_draw_ctx_init;
+    disp_drv.draw_ctx_deinit = watch_gpu_draw_ctx_deinit;
+    disp_drv.draw_ctx_size   = sizeof(watch_gpu_draw_ctx_t);
+    disp_drv.draw_buf        = &draw_buf;
+    disp_drv.full_refresh    = 0;
+    disp_drv.rounder_cb      = lv_rounder_cb;
     lv_disp_drv_register(&disp_drv);
 
     lv_indev_drv_init(&indev_drv);
@@ -101,7 +102,7 @@ void lvgl_display_init(void *pvParameters)
         {
             if (display_awake)
             {
-                lv_gpu_ambiq_nema_wait(&disp_drv);
+                watch_gpu_renderer_wait();
                 while (display_is_busy())
                     vTaskDelay(pdMS_TO_TICKS(1));
                 display_end();
@@ -167,8 +168,8 @@ static bool refresh_overwrites_full_screen(lv_disp_drv_t *driver)
 
 void disp_flush(lv_disp_drv_t *display, const lv_area_t *area, lv_color_t *px_map)
 {
-    /* LVGL calls gpu_wait_cb first; repeat defensively for direct flush calls. */
-    lv_gpu_ambiq_nema_wait(display);
+    /* LVGL waits for the draw context before flushing; repeat defensively. */
+    watch_gpu_renderer_wait();
     uint32_t width  = (uint32_t)lv_area_get_width(area);
     uint32_t height = (uint32_t)lv_area_get_height(area);
     configASSERT(area->x1 >= 0 && area->y1 >= 0);
