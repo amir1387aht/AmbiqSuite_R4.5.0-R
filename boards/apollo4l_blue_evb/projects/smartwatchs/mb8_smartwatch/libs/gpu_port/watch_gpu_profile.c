@@ -38,7 +38,7 @@ static void profile_output_task(void *argument)
             sizeof(line),
             "GPUprof dma_fps=%lu te_hz=%lu cl=%lu glyph_gpu=%lu glyph_cpu=%lu cache_new=%lu cache_hit=%lu handler_ms=%lu " TRANSFER_TIME
             "=%lu gpuwait_ms=%lu panelwait_ms=%lu " TRANSFER_GPU "=%lu " TRANSFER_CPU
-            "=%lu tewait_ms=%lu dma_ms=%lu framecopy_ms=%lu gap1=%lu gap2=%lu gap3p=%lu hw=%lu native565=%u fill_gpu=%lu bg_gpu=%lu cpu_fallback=%lu\r\n",
+            "=%lu tewait_ms=%lu dma_ms=%lu dma_avg_us=%lu framecopy_ms=%lu gap1=%lu gap2=%lu gap3p=%lu hw=%lu native565=%u fill_gpu=%lu bg_gpu=%lu cpu_fallback=%lu\r\n",
             (unsigned long)(DELTA(panel_frames) * 1000u / sample.elapsed_ms),
             (unsigned long)(DELTA(te_edges) * 1000u / sample.elapsed_ms),
             (unsigned long)DELTA(submitted_cl),
@@ -54,6 +54,10 @@ static void profile_output_task(void *argument)
             (unsigned long)DELTA(stage_cpu),
             MS(te_wait_cycles),
             MS(panel_dma_cycles),
+            (unsigned long)(DELTA(panel_frames)
+                                ? DELTA(panel_dma_cycles) / (configCPU_CLOCK_HZ / 1000000u) /
+                                      DELTA(panel_frames)
+                                : 0u),
             MS(frame_copy_cycles),
             (unsigned long)DELTA(panel_gap1),
             (unsigned long)DELTA(panel_gap2),

@@ -1,5 +1,7 @@
 #include "./display.h"
 #include "watch_gpu.h"
+#include "display_bus_config.h"
+#include "FreeRTOS.h"
 #include "watch_framebuffer.h"
 
 __attribute__((section(".display_buffer"), aligned(32))) lv_color_t display_buffer1[DRAW_BUF_SIZE];
@@ -56,7 +58,7 @@ static uint32_t ui32MspiDisplayQBuffer[(AM_HAL_MSPI_CQ_ENTRY_SIZE / 4) * 12];
 
 static am_devices_mspi_rm69330_config_t QuadDisplayMSPICfg = {
     .eDeviceConfig      = AM_HAL_MSPI_FLASH_QUAD_CE0_1_4_4,
-    .eClockFreq         = AM_HAL_MSPI_CLK_48MHZ,
+    .eClockFreq         = WATCH_DISPLAY_PIXEL_CLOCK,
     .pNBTxnBuf          = ui32MspiDisplayQBuffer,
     .ui32NBTxnBufLength = sizeof(ui32MspiDisplayQBuffer) / sizeof(uint32_t),
 };
@@ -69,7 +71,7 @@ am_devices_display_hw_config_t g_sDispCfg = {.eIC = DISP_IC_RM69330,
     .bFlip                                        = false,
     .ui32Module                                   = DISPLAY_MSPI_INST,
     .eDeviceConfig                                = AM_HAL_MSPI_FLASH_QUAD_CE0_1_4_4,
-    .eClockFreq                                   = AM_HAL_MSPI_CLK_48MHZ,
+    .eClockFreq                                   = WATCH_DISPLAY_PIXEL_CLOCK,
     .bClockonD4                                   = false,
     .ui8DispMspiSelect                            = 1,
     .eTEType                                      = DISP_TE_GPIO,
@@ -303,6 +305,14 @@ static void display_transfer_complete(void *pCallbackCtxt, uint32_t transactionS
 #if WATCH_GPU_PROFILE
     WATCH_PROFILE_ADD(panel_dma_cycles, panel_dma_started_at);
 #endif
+    /* A DMA error must not be reported to LVGL as a successfully shown frame. */
+    configASSERT(transactionStatus == AM_HAL_STATUS_SUCCESS);
+    if (transactionStatus != AM_HAL_STATUS_SUCCESS)
+    {
+        for (;;)
+        {
+        }
+    }
     sDispTransfer.bXferBusy = false;
 
     if (sDispTransfer.fnXferDoneCb)
@@ -360,7 +370,14 @@ static void am_devices_display_te_handler(void *pvUnused)
         WATCH_PROFILE_ADD(te_wait_cycles, panel_queued_at);
         panel_dma_started_at = watch_profile_start();
 #endif
-        am_devices_display_launch_transfer();
+        uint32_t status = am_devices_display_launch_transfer();
+        configASSERT(status == AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS);
+        if (status != AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS)
+        {
+            for (;;)
+            {
+            }
+        }
         sDispTransfer.bXferPending = false;
     }
 }
@@ -878,25 +895,56 @@ void display_update_area(const lv_area_t *area, uint8_t *px_map, void (*pArgXfer
     uint16_t rowSize     = area->y2 - area->y1 + 1;
     g_dataSize           = columnSize * rowSize * (PANEL_COLOR_DEPTH / 8);
 
-    am_devices_mspi_rm69330_set_transfer_window(
+    uint32_t status = am_devices_mspi_rm69330_set_transfer_window(
         g_DisplayHandle, columnStart, columnSize, rowStart, rowSize);
-    am_devices_display_transfer_frame(
+    configASSERT(status == AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS);
+    if (status != AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS)
+    {
+        for (;;)
+        {
+        }
+    }
+    status = am_devices_display_transfer_frame(
         0, 0, (uint32_t)(uintptr_t)px_map, (am_devices_disp_handler_t)pArgXferDone, NULL);
+    configASSERT(status == AM_DEVICES_DISPLAY_STATUS_SUCCESS);
+    if (status != AM_DEVICES_DISPLAY_STATUS_SUCCESS)
+    {
+        for (;;)
+        {
+        }
+    }
 }
 
 void display_init()
 {
     display_pins_enable(1);
-    am_devices_display_init(display_width,
+    int32_t init_status = am_devices_display_init(display_width,
         display_height,
         PANEL_COLOR_DEPTH == 16 ? COLOR_FORMAT_RGB565 : COLOR_FORMAT_RGB888,
         true);
+    configASSERT(init_status == AM_DEVICES_DISPLAY_STATUS_SUCCESS);
+    if (init_status != AM_DEVICES_DISPLAY_STATUS_SUCCESS)
+    {
+        for (;;)
+        {
+        }
+    }
+    am_util_stdio_printf(
+        "Display QSPI MSPI%lu: 1-4-4 pixels=%uMHz command=48MHz read=8MHz (configured, not measured).\r\n",
+        (unsigned long)DISPLAY_MSPI_INST,
+        (unsigned)WATCH_DISPLAY_QSPI_MHZ);
 
-    uint32_t data;
+    uint32_t data   = 0;
     int      result = am_devices_mspi_rm69330_read_id(g_DisplayHandle, (uint32_t *)&data);
 
-    if (result)
-        am_util_stdio_printf("Init display failed!!!\r\n");
+    configASSERT(result == AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS);
+    if (result != AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS)
+    {
+        am_util_stdio_printf("Display ID read failed; stopped.\r\n");
+        for (;;)
+        {
+        }
+    }
 
     switch (get_display_mode(data))
     {
