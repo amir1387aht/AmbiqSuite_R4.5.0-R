@@ -1,0 +1,8 @@
+LVGL v8.4.0
+Upstream: https://github.com/lvgl/lvgl
+Commit: 4495f428630cc1741bd8bfd977f080e8460e8e8d
+Runtime C/H sources, public lvgl.h, template configuration and MIT licence.
+Excluded: examples, demos, tests, docs, development tools and source TTF assets.
+Source/data unchanged except leading indentation in lv_font_simsun_16_cjk.c
+(normalized to fit the repository transport's per-request size bound).
+The watch GPU backend and allocator adapters live outside this upstream tree.
