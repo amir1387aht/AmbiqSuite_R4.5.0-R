@@ -24,12 +24,16 @@ typedef struct {
     uint32_t te_wait_cycles;
     uint32_t panel_dma_cycles;
     uint32_t frame_copy_cycles;
+    uint32_t panel_gap1;
+    uint32_t panel_gap2;
+    uint32_t panel_gap3p;
 } watch_gpu_stats_t;
 extern volatile watch_gpu_stats_t watch_gpu_stats;
 extern volatile bool watch_gpu_ready;
 void watch_gpu_note_submit(int32_t submission_id, uint32_t glyphs);
 void watch_gpu_note_completed(int32_t submission_id, uint32_t hardware_id);
 void watch_gpu_profile_poll(void);
+void watch_gpu_profile_init(void);
 void watch_gpu_cpu_write_complete(void);
 #if WATCH_GPU_PROFILE
 #include "am_mcu_apollo.h"

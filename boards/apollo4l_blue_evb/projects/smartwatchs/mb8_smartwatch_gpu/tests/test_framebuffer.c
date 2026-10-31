@@ -40,6 +40,15 @@ int main(void)
                 assert(frame[i] == reference[i]);
         }
     }
+    watch_te_cadence_t cadence = {0};
+    assert(watch_te_cadence_sample(&cadence, 100) == 0);
+    assert(watch_te_cadence_sample(&cadence, 101) == 1);
+    assert(watch_te_cadence_sample(&cadence, 103) == 2);
+    assert(watch_te_cadence_sample(&cadence, 107) == 3);
+    cadence.previous_te = UINT32_MAX - 1u;
+    assert(watch_te_cadence_sample(&cadence, 0) == 2);
+    assert(watch_te_cadence_sample(&cadence, 0) == 0);
+    puts("PASS: TE cadence classifies consecutive, skipped, initial and wrapped intervals");
     watch_dirty_rows_t rows = {0};
     watch_dirty_rows_include(&rows, 100, 140);
     watch_dirty_rows_include(&rows, 20, 30);

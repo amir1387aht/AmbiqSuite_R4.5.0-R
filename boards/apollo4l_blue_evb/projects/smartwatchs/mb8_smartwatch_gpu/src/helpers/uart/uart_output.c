@@ -4,6 +4,13 @@
 #include "am_bsp.h"
 #include "am_util.h"
 
+#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
+#include "FreeRTOS.h"
+#include "semphr.h"
+#include "task.h"
+static SemaphoreHandle_t uart_tx_lock;
+#endif
+
 void *phUART;
 uint8_t g_pui8TxBuffer[256];
 uint8_t g_pui8RxBuffer[2];
@@ -38,6 +45,12 @@ void am_uart_isr(void)
 
 void uart_print(char *pcStr)
 {
+#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
+    /* Fault/ISR diagnostics must not call a blocking RTOS mutex API. */
+    bool locked = uart_tx_lock && __get_IPSR() == 0 &&
+                  xTaskGetSchedulerState() == taskSCHEDULER_RUNNING;
+    if (locked) xSemaphoreTake(uart_tx_lock, portMAX_DELAY);
+#endif
     uint32_t ui32StrLen = 0;
     uint32_t ui32BytesWritten = 0;
 
@@ -65,6 +78,9 @@ void uart_print(char *pcStr)
 
     am_hal_uart_transfer(phUART, &sUartWrite);
 
+#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
+    if (locked) xSemaphoreGive(uart_tx_lock);
+#endif
     if (ui32BytesWritten != ui32StrLen)
     {
         //
@@ -74,6 +90,26 @@ void uart_print(char *pcStr)
             ;
     }
 }
+
+#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
+bool uart_profile_write(const char *text, size_t length)
+{
+    if (!uart_tx_lock || !text || length == 0) return false;
+    if (xSemaphoreTake(uart_tx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    uint32_t written = 0;
+    /* This runs only on the lower-priority logger. Allow graphics to preempt
+     * it while UART drains. A failed diagnostic write must not hang the UI. */
+    const am_hal_uart_transfer_t transfer = {
+        .eType = AM_HAL_UART_BLOCKING_WRITE,
+        .pui8Data = (uint8_t *)text, .ui32NumBytes = (uint32_t)length,
+        .pui32BytesTransferred = &written, .ui32TimeoutMs = 1000,
+        .pfnCallback = NULL, .pvContext = NULL, .ui32ErrorStatus = 0
+    };
+    uint32_t status = am_hal_uart_transfer(phUART, &transfer);
+    xSemaphoreGive(uart_tx_lock);
+    return status == AM_HAL_STATUS_SUCCESS && written == length;
+}
+#endif
 
 am_hal_gpio_pincfg_t g_AM_GPIO_COM_UART_TX =
 {
@@ -138,6 +174,10 @@ void uart_init()
     //
     // Set the main print interface to use the UART print function we defined.
     //
+#if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
+    uart_tx_lock = xSemaphoreCreateMutex();
+    configASSERT(uart_tx_lock != NULL);
+#endif
     am_util_stdio_printf_init(uart_print);
 }
 

@@ -16,6 +16,7 @@ for mode in [sys.argv[1] if len(sys.argv) > 1 else 'bin']:
  data=binary.read_bytes(); sp,reset=struct.unpack_from('<II',data)
  assert b'%u FPS\n%u%% CPU' in data, 'Original LVGL FPS/CPU monitor missing from linked image'
  assert b'GPU glyph-cache-v1: FPS monitor=' in data
+ assert b'GPU IRQ: immediate RTOS wake; profile UART below LVGL.' in data
  assert b'GPU TEXT completed: submitted=' in data
  assert 'watch_gpu_glyph_bitmap' in symbols
  assert 'watch_gpu_note_completed' in symbols
@@ -43,6 +44,9 @@ for mode in [sys.argv[1] if len(sys.argv) > 1 else 'bin']:
  assert int(match[1],16)+int(match[2],16)<=symbols['__lvgl_ssram_start__']
  depfiles=list((d/'obj').rglob('*.d'))
  assert all('../libs/lvgl' not in f.read_text() for f in depfiles)
+ assert (d/'obj/libs/gpu_port/watch_nema_hal.o').exists()
+ assert not (d/'obj/third_party/ThinkSi/config/apollo4l_nemagfx/nema_hal.o').exists()
+ assert ('profile_output_task' in symbols) == (b'GPUprof dma_fps=' in data)
  results[mode]={'binary_bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'stack_pointer':hex(sp),'reset_vector':hex(reset),'gpu_irq28_vector':hex(gpu_vector),'compiled_units':len(list((d/'obj').rglob('*.o'))),'unresolved_symbols':0}
  print('PASS:',mode,json.dumps(results[mode]))
 print('PASS: linked application firmware validated (not a hardware test)')

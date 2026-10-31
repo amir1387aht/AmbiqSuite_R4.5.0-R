@@ -1,5 +1,6 @@
 #include "./display.h"
 #include "watch_gpu.h"
+#include "watch_framebuffer.h"
 
 __attribute__((section(".display_buffer"), aligned(32)))
 lv_color_t display_buffer1[DRAW_BUF_SIZE];
@@ -8,6 +9,7 @@ lv_color_t display_buffer2[DRAW_BUF_SIZE];
 
 #define XFER_MAX_WAIT_MS 100
 #if WATCH_GPU_PROFILE
+static watch_te_cadence_t panel_cadence;
 static volatile uint32_t panel_queued_at;
 static volatile uint32_t panel_dma_started_at;
 #endif
@@ -338,6 +340,10 @@ static void am_devices_display_te_handler(void* pvUnused) {
 	//
 	if (sDispTransfer.bXferPending) {
 #if WATCH_GPU_PROFILE
+        unsigned gap = watch_te_cadence_sample(&panel_cadence, watch_gpu_stats.te_edges);
+        if (gap == 1u) ++watch_gpu_stats.panel_gap1;
+        else if (gap == 2u) ++watch_gpu_stats.panel_gap2;
+        else if (gap >= 3u) ++watch_gpu_stats.panel_gap3p;
         WATCH_PROFILE_ADD(te_wait_cycles, panel_queued_at);
         panel_dma_started_at = watch_profile_start();
 #endif

@@ -38,7 +38,8 @@ FONT_OVERRIDES := $(notdir $(wildcard ../libs/gpu_port/lv_font_montserrat_*.c))
 LVGL_SRC := $(filter-out $(addprefix $(LVGL_DIR)/src/font/,$(FONT_OVERRIDES)),$(LVGL_SRC))
 PORT_SRC := $(wildcard ../libs/gpu_port/*.c)
 AMBIQ_SRC := $(addprefix $(AMBIQ_DIR)/,lv_ambiq_nema_hal.c lv_ambiq_misc.c lv_ambiq_font_align.c lv_ambiq_decoder.c)
-NEMA_SRC := $(addprefix $(NEMA_PLATFORM_DIR)/,nema_hal.c nema_event.c nema_utils.c)
+# The local watch_nema_hal.c fixes the SDK binary-semaphore ISR exit.
+NEMA_SRC := $(addprefix $(NEMA_PLATFORM_DIR)/,nema_event.c nema_utils.c)
 UTIL_SRC := $(addprefix $(ROOT_DIR)/utils/,am_util_delay.c am_util_faultisr.c am_util_id.c am_util_stdio.c am_util_string.c am_util_time.c)
 FREERTOS_DIR := $(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source
 RTOS_SRC := $(addprefix $(FREERTOS_DIR)/,queue.c tasks.c timers.c list.c event_groups.c)

@@ -28,16 +28,23 @@ make clean
 ./flash.bat
 ```
 
-For on-device profiling, use the explicit wrapper:
+To evaluate smoothness without continuous profiling output:
 
 ```sh
-./flash_profile.bat
+./flash.bat GPU_PROFILE=0
 ```
 
-It sets `GPU_PROFILE=1` for the existing flasher's nested make. Do not use
-`make GPU_PROFILE=1 && ./flash.bat`: the second make normally rebuilds with
-profiling off. Alternatively, `GPU_PROFILE=1 ./flash.bat` in Git Bash works.
-Plain `./flash.bat` returns to profiling-off unless the environment exports it.
+For on-device profiling, use the same flasher:
+
+```sh
+./flash.bat GPU_PROFILE=1
+```
+
+`flash.bat` now forwards its arguments to make (`make %*`), preserving the build
+failure gate and existing J-Link command. The separate profiling batch file has
+been removed. Do not build profiling separately and then invoke a plain flasher:
+the nested make can select different options. Explicit flags on the flasher avoid
+that ambiguity. The FPS/CPU overlay remains enabled in both builds.
 
 The original make/J-Link invocation, build-failure gate, device `AMA4B2KP-KXR`,
 SWD/4000 kHz and application origin `0x00018000` are retained. The existing path
@@ -63,7 +70,7 @@ pipeline and GPU UI renderer. It is an A/B control, not a restoration of an olde
 commit. To flash that control from Git Bash:
 
 ```sh
-GPU_CONVERT=0 ./flash_profile.bat
+./flash.bat GPU_PROFILE=1 GPU_CONVERT=0
 ```
 
 ## Why the transport pipeline changed
@@ -120,6 +127,30 @@ masked fills of at most 256 pixels use CPU blending to avoid per-scanline GPU
 submit/wait overhead. This threshold is a tuning choice, not a measured optimum.
 Task pacing follows LVGL's next deadline rather than always sleeping another 5 ms.
 
+## Smoothness follow-up: IRQ wake-up and profiling isolation
+
+The SDK Apollo4l HAL gave the completion semaphore without yielding on ISR exit
+when WAIT_IRQ_BINARY_SEMAPHORE=1. With eight stripe conversions per full refresh,
+tick-delayed task wake-ups can accumulate and vary the frame's ready time. The
+project-local `libs/gpu_port/watch_nema_hal.c` is an otherwise unchanged SDK copy:
+it initializes the wake flag and yields for either semaphore/notification path,
+after publishing last_cl_id and invoking its callback. The Makefile excludes the
+SDK's duplicate nema_hal.c. The shared SDK remains untouched.
+
+The old profiler also called blocking UART printf from the LVGL task. One supplied
+223-byte line takes about 19.4 ms on a 115200-8-N-1 wire (FIFO buffering can reduce
+the actual blocking time). That is significant beside a nominal 16.7 ms frame.
+Profiling now snapshots counters into a one-slot overwrite queue without waiting;
+a priority-1 logger formats into its own buffer and sends UART below priority-2
+LVGL. An unsent sample can be overwritten; logging cannot build an unbounded
+backlog or block the producer. A UART mutex serializes task-context output; fault/ISR diagnostics do not
+try to acquire an RTOS mutex. Slow/failed diagnostic writes do not stall graphics.
+The UART still uses its existing blocking HAL API, but only on the logger task.
+
+No touch coordinates, scroll inertia/physics, menu layout or timer periods were
+changed in this follow-up. First remove measured scheduling/logging interference;
+then judge any remaining input/physics difference from stock firmware on-device.
+
 ## Runtime checks and profiling
 
 A GPU-conversion build should print:
@@ -127,6 +158,7 @@ A GPU-conversion build should print:
 ```text
 GPU conversion: Nema BGRA8888 -> RGB565 enabled.
 GPU glyph-cache-v1: FPS monitor=1 refresh=16 ms profile=1
+GPU IRQ: immediate RTOS wake; profile UART below LVGL.
 Panel pipeline: double RGB565 frames, render/DMA overlap.
 GPU TEXT completed: submitted=... HW_CLID=... glyphs=...
 ```
@@ -152,11 +184,15 @@ for several seconds. Capture complete `GPUprof` lines:
   no longer includes waiting for the newly queued transfer inside LVGL.
 - `tewait_ms`, `dma_ms`: queued-to-TE and TE-launch-to-callback interval totals.
 - `gpuwait_ms`: LVGL drawing-command waits (conversion waits are in convert_ms).
+- `gap1`, `gap2`, `gap3p`: submitted-frame start gaps of one, two or at least
+  three TE periods. During continuous scrolling, gap2/gap3p expose repeated/late
+  frames that an average FPS hides. Large gaps are normal while idle; the first
+  transfer is excluded. These are launch counters, not DMA completion counters.
 - `hw`: latest observed completed hardware CLID.
 
 DWT-cycle timings assume configured 192 MHz and can be affected by clock gating,
 sleep and other tasks. Totals overlap/nest and must not be added into utilization
-percentages. UART profiling adds overhead and is off by default. The ordinary
+percentages. UART profiling still adds lower-priority CPU/IRQ/bus overhead and is off by default. The ordinary
 FPS/CPU overlay is unchanged; its CPU figure is LVGL handler busy/idle timing,
 not an independent FreeRTOS CPU-utilization measurement.
 
@@ -174,8 +210,8 @@ command tests cannot verify the watch's rasterizer, panel timing, colors or spee
 | LVGL GPU shared pool | 0x100e0000 | 512 KiB reserved |
 
 The static general shared region includes the MSP/C/FreeRTOS heaps, BGRA buffers
-and first 188,160-byte panel frame. Current default linked usage is 428,288 bytes
-(81.69%). In the separately reserved GPU shared pool, the glyph arena consumes
+and first 188,160-byte panel frame. Current default linked usage is 428,320 bytes
+(81.70%). In the separately reserved GPU shared pool, the glyph arena consumes
 96 KiB, the second panel allocation requests 188,191 bytes including alignment
 slack, and the conversion CL requests 1024 bytes, in addition to SDK/allocator
 storage. Runtime checks bound the second panel frame inside that GPU pool.
@@ -198,6 +234,8 @@ python3 tests/test_gpu_glyph_path.py
 python3 tests/test_font_cache_assets.py
 python3 tests/test_gpu_conversion.py
 python3 tests/test_gpu_convert_host.py
+python3 tests/test_gpu_irq.py
+python3 tests/test_profile_task.py
 python3 tests/validate_port.py
 cc -std=c11 -O2 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_rgb565.c -o /tmp/test_rgb565
 /tmp/test_rgb565
@@ -214,3 +252,8 @@ The conversion host test compiles production conversion code with actual SDK API
 headers but mocked Nema calls. It validates commands/strides/alignment, ordered
 completion, partial-pixel preservation using CPU reference execution and fallback
 behavior. It is not a GPU emulator or hardware color-validation result.
+
+## How this port was assembled
+
+See [PORTING_GUIDE.md](PORTING_GUIDE.md) for the chip HAL, LVGL/archive ABI,
+GPU-visible memory, font layout, panel pipeline and RTOS integration details.

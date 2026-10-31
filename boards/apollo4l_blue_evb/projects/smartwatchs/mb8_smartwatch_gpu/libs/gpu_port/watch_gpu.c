@@ -45,39 +45,6 @@ void watch_gpu_note_completed(int32_t submission_id, uint32_t hardware_id)
     }
 }
 
-void watch_gpu_profile_poll(void)
-{
-#if WATCH_GPU_PROFILE
-    static uint32_t last_ms;
-    static watch_gpu_stats_t previous;
-    uint32_t now = watch_tick_ms();
-    uint32_t elapsed = now - last_ms;
-    if (elapsed < 1000u) return;
-    watch_gpu_stats_t current = watch_gpu_stats;
-    uint32_t cpu_cycles_per_ms = configCPU_CLOCK_HZ / 1000u;
-    am_util_stdio_printf("GPUprof dma_fps=%lu te_hz=%lu cl=%lu glyph_gpu=%lu glyph_cpu=%lu cache_new=%lu cache_hit=%lu handler_ms=%lu convert_ms=%lu gpuwait_ms=%lu panelwait_ms=%lu conv_gpu=%lu conv_cpu=%lu tewait_ms=%lu dma_ms=%lu framecopy_ms=%lu hw=%lu\r\n",
-        (unsigned long)((current.panel_frames - previous.panel_frames) * 1000u / elapsed),
-        (unsigned long)((current.te_edges - previous.te_edges) * 1000u / elapsed),
-        (unsigned long)(current.submitted_cl - previous.submitted_cl),
-        (unsigned long)(current.gpu_glyphs - previous.gpu_glyphs),
-        (unsigned long)(current.cpu_glyphs - previous.cpu_glyphs),
-        (unsigned long)(current.glyph_cache_new - previous.glyph_cache_new),
-        (unsigned long)(current.glyph_cache_hits - previous.glyph_cache_hits),
-        (unsigned long)((current.handler_cycles - previous.handler_cycles) / cpu_cycles_per_ms),
-        (unsigned long)((current.convert_cycles - previous.convert_cycles) / cpu_cycles_per_ms),
-        (unsigned long)((current.gpu_wait_cycles - previous.gpu_wait_cycles) / cpu_cycles_per_ms),
-        (unsigned long)((current.panel_wait_cycles - previous.panel_wait_cycles) / cpu_cycles_per_ms),
-        (unsigned long)(current.convert_gpu - previous.convert_gpu),
-        (unsigned long)(current.convert_cpu - previous.convert_cpu),
-        (unsigned long)((current.te_wait_cycles - previous.te_wait_cycles) / cpu_cycles_per_ms),
-        (unsigned long)((current.panel_dma_cycles - previous.panel_dma_cycles) / cpu_cycles_per_ms),
-        (unsigned long)((current.frame_copy_cycles - previous.frame_copy_cycles) / cpu_cycles_per_ms),
-        (unsigned long)current.completed_hw_id);
-    previous = current;
-    last_ms = now;
-#endif
-}
-
 #if LV_USE_LOG
 static void log_line(const char *s) { am_util_stdio_printf("%s", s); }
 #endif
@@ -105,6 +72,8 @@ void watch_gpu_init(void)
     am_util_stdio_printf("GPU glyph-cache-v1: FPS monitor=%u refresh=%u ms profile=%u\r\n",
         (unsigned)LV_USE_PERF_MONITOR, (unsigned)LV_DISP_DEF_REFR_PERIOD,
         (unsigned)WATCH_GPU_PROFILE);
+    watch_gpu_profile_init();
+    am_util_stdio_printf("GPU IRQ: immediate RTOS wake; profile UART below LVGL.\r\n");
     watch_gpu_ready = true;
     am_util_stdio_printf("Ambiq LVGL 8.1 GPU initialized; BGRA8888 -> RGB565 panel.\r\n");
 }
