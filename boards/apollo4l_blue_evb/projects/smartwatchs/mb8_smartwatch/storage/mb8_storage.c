@@ -7,6 +7,7 @@
 #include "yaffs_guts.h"
 #include "yaffsfs.h"
 #include "yaffs_packedtags2.h"
+#include "yaffs_getblockinfo.h"
 #include "am_mcu_apollo.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -22,6 +23,8 @@ static TaskHandle_t      owner;
 static bool              registered, scan_error;
 static const char       *status_text = "NAND opt-in configuration not confirmed";
 static unsigned          allocated, high_water;
+static bool              raw_identified, raw_status_valid;
+static uint8_t           raw_status;
 static int               last_error;
 unsigned int             yaffs_trace_mask;
 extern void              yaffs_remove_device(struct yaffs_dev *);
@@ -220,6 +223,110 @@ const char *mb8_storage_status(void)
     return status_text;
 }
 
+/* All these entry points share one worker. No separate diagnostic task may
+ * race filesystem state or YAFFS's global errno. */
+static bool claim_worker(void)
+{
+    if (!task_context() || (owner && owner != xTaskGetCurrentTaskHandle()))
+        return false;
+    owner = xTaskGetCurrentTaskHandle();
+    return true;
+}
+
+int mb8_storage_probe_only(void)
+{
+    raw_identified   = false;
+    raw_status_valid = false;
+    if (!claim_worker() || dev.is_mounted)
+    {
+        status_text = "ID-only probe requires the storage worker and no mounted filesystem";
+        return -1;
+    }
+    if (!mb8_nand_board.pinout_confirmed || !mb8_nand_board.voltage_confirmed ||
+        !mb8_nand_board.part_geometry_confirmed)
+    {
+        status_text = "electrical/pinout/part confirmations missing; no hardware touched";
+        return -1;
+    }
+    struct ds35_bus bus;
+    int             r = mb8_nand_bus_open(&bus);
+    if (r < 0)
+    {
+        status_text = "dedicated bus/pull-up/pin/clock guards failed; no probe";
+        return -1;
+    }
+    /* Zero count is an empty array-access range, NOT a guessed partition. */
+    r = ds35_probe(&nand, &bus, 0, 0);
+    if (r == DS35_OK)
+    {
+        raw_identified   = true;
+        r                = ds35_read_status(&nand, &raw_status);
+        raw_status_valid = r == DS35_OK;
+    }
+    int shutdown = ds35_shutdown(&nand);
+    mb8_nand_bus_close();
+    status_text = r < 0          ? "ID/status probe failed (expected E5 A1); no filesystem access"
+                  : shutdown < 0 ? "ID verified; feature restoration failed, reset required"
+                                 : "E5 A1 ID/status verified; no array access or protection unlock";
+    return r < 0 || shutdown < 0 ? -1 : 0;
+}
+
+int mb8_storage_get_usage(struct mb8_storage_usage *u)
+{
+    if (!u)
+        return -1;
+    memset(u, 0, sizeof(*u));
+    if (!claim_worker())
+        return -1;
+    u->raw_identified = raw_identified;
+    if (raw_identified)
+    {
+        u->raw_main_bytes  = (uint64_t)DS35_PAGE * DS35_PAGES_PER_BLOCK * DS35_BLOCKS;
+        u->status_valid    = raw_status_valid;
+        u->status_register = raw_status;
+    }
+    if (nand.fault || scan_error)
+    {
+        status_text = "NAND transport/scan fault; filesystem capacity unavailable";
+        return -1;
+    }
+    if (!dev.is_mounted)
+        return -1;
+    Y_LOFF_T total      = yaffs_totalspace("/nand");
+    Y_LOFF_T free_bytes = yaffs_freespace("/nand");
+    /* Never cast negative error returns to unsigned or silently clamp counts. */
+    if (total <= 0 || free_bytes < 0 || free_bytes > total)
+    {
+        status_text = "YAFFS capacity API returned error/inconsistent counts";
+        return -1;
+    }
+    u->mounted                   = true;
+    u->read_only                 = dev.read_only;
+    u->total_bytes               = (uint64_t)total;
+    u->free_bytes                = (uint64_t)free_bytes;
+    u->used_or_unavailable_bytes = (uint64_t)(total - free_bytes);
+    u->partition_main_bytes =
+        (uint64_t)mb8_nand_board.block_count * DS35_PAGES_PER_BLOCK * DS35_PAGE;
+    u->reserved_blocks   = dev.param.n_reserved_blocks;
+    u->checkpoint_blocks = dev.blocks_in_checkpt;
+    for (uint32_t b = dev.internal_start_block; b <= dev.internal_end_block; b++)
+        if (yaffs_get_block_info(&dev, (int)b)->block_state == YAFFS_BLOCK_STATE_DEAD)
+            u->dead_blocks++;
+    return 0;
+}
+
+int mb8_storage_read_sample(uint32_t relative_page, void *data, size_t bytes)
+{
+    if (!claim_worker() || !dev.is_mounted || !dev.read_only || !data || !bytes ||
+        bytes > DS35_PAGE || relative_page >= mb8_nand_board.block_count * DS35_PAGES_PER_BLOCK)
+        return DS35_EINVAL;
+    uint32_t page = mb8_nand_board.first_block * DS35_PAGES_PER_BLOCK + relative_page;
+    int      r    = ds35_check_bad(&nand, page / DS35_PAGES_PER_BLOCK);
+    if (r != DS35_OK)
+        return r;
+    return ds35_read(&nand, page, data, bytes, NULL, 0);
+}
+
 int mb8_storage_mount(bool read_only)
 {
     if (!task_context())
@@ -237,6 +344,11 @@ int mb8_storage_mount(bool read_only)
         mb8_nand_board.block_count > DS35_BLOCKS - mb8_nand_board.first_block)
     {
         status_text = "NAND pins/1.8V/part geometry/partition unconfirmed; no hardware touched";
+        return -1;
+    }
+    if (!mb8_nand_board.yaffs_provisioned_confirmed)
+    {
+        status_text = "YAFFS format/layout unconfirmed (stock/blank NAND is not proof); no scan";
         return -1;
     }
     if (!read_only && !mb8_nand_board.writes_authorized)
@@ -267,6 +379,16 @@ int mb8_storage_mount(bool read_only)
         mb8_nand_bus_close();
         return -1;
     }
+    raw_identified   = true;
+    raw_status_valid = false;
+    if (ds35_read_status(&nand, &raw_status) < 0)
+    {
+        status_text = "NAND status read failed; no filesystem scan";
+        ds35_shutdown(&nand);
+        mb8_nand_bus_close();
+        return -1;
+    }
+    raw_status_valid = true;
     /* Always scan read-only FIRST, with writes locked at the NAND layer too.
      * This prevents interrupted/failed scans from causing any media writes.
      */
@@ -336,7 +458,11 @@ int mb8_storage_unmount(void)
      * Close open handles first. Never force away a healthy mounted device.
      */
     if (yaffs_unmount("/nand") < 0)
+    {
+        status_text =
+            "YAFFS unmount failed (open handles or flush error); worker retains ownership";
         return -1;
+    }
     nand.writable       = false;
     int shutdown_result = ds35_shutdown(&nand);
     mb8_nand_bus_close();

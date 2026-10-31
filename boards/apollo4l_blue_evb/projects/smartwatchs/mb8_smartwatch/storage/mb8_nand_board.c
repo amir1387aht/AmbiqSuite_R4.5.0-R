@@ -6,6 +6,7 @@ const struct mb8_nand_board_config mb8_nand_board = {
     .part_geometry_confirmed     = MB8_NAND_PART_GEOMETRY_CONFIRMED,
     .partition_confirmed         = MB8_NAND_PARTITION_CONFIRMED,
     .writes_authorized           = MB8_NAND_WRITES_AUTHORIZED,
+    .yaffs_provisioned_confirmed = MB8_NAND_YAFFS_PROVISIONED_CONFIRMED,
     .mspi                        = MB8_NAND_MSPI,
     .io2_pin                     = MB8_NAND_IO2_PIN,
     .io2_func                    = MB8_NAND_IO2_FUNC,

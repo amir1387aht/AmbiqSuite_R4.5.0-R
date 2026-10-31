@@ -1,5 +1,6 @@
 #include "./utils.h"
 #include "watch_gpu.h"
+#include "mb8_storage.h"
 
 const am_hal_pwrctrl_mcu_memory_config_t i_DefaultMcuMemCfg = {
     .eCacheCfg    = AM_HAL_PWRCTRL_CACHE_ALL,
@@ -38,6 +39,10 @@ void mcu_init(void *pvParameters)
     lightSens_init();
     acclSens_init();
 
+#if WATCH_NAND_YAFFS2
+    /* UART, SRAM/Nema allocators and sensors are ready; worker runs separately. */
+    mb8_storage_startup();
+#endif
     vTaskDelete(NULL);
 }
 

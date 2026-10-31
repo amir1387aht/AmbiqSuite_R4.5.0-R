@@ -57,8 +57,12 @@ struct ds35_nand
     uint8_t checked[(DS35_BLOCKS + 7u) / 8u];
 };
 
-/* Caller serializes every operation. Probe is non-destructive: no unlock/erase. */
+/* Caller serializes every operation. Probe is non-destructive: no unlock/erase.
+ * first=0,count=0 is ID/status-only: EMPTY accessible range; all array reads,
+ * programs/erases/BBM and protection unlock remain forbidden. No partition guess.
+ * Volatile reset/QE/ECC setup/restoration is necessary even for read-only use. */
 int ds35_probe(struct ds35_nand *, const struct ds35_bus *, uint32_t first, uint32_t count);
+int ds35_read_status(struct ds35_nand *, uint8_t *status);
 int ds35_shutdown(struct ds35_nand *);
 int ds35_allow_writes(struct ds35_nand *);
 int ds35_read(

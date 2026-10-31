@@ -115,8 +115,8 @@ int ds35_probe(struct ds35_nand *n, const struct ds35_bus *bus, uint32_t first, 
 {
     if (!n || !bus || !bus->transfer || !bus->delay_us ||
         (bus->data_width != 1 && bus->data_width != 4) ||
-        (bus->data_width == 4 && !bus->quad_ready) || !count || first >= DS35_BLOCKS ||
-        count > DS35_BLOCKS - first)
+        (bus->data_width == 4 && !bus->quad_ready) || (!count && first != 0) ||
+        first >= DS35_BLOCKS || count > DS35_BLOCKS - first)
         return DS35_EINVAL;
     memset(n, 0, sizeof(*n));
     n->bus         = *bus;
@@ -160,9 +160,16 @@ int ds35_probe(struct ds35_nand *n, const struct ds35_bus *bus, uint32_t first, 
     return DS35_OK;
 }
 
+int ds35_read_status(struct ds35_nand *n, uint8_t *status)
+{
+    if (!n || !n->ready || n->fault || !status)
+        return DS35_NOT_READY;
+    return feature(n, 0xc0, status);
+}
+
 int ds35_allow_writes(struct ds35_nand *n)
 {
-    if (!n || !n->ready || n->fault)
+    if (!n || !n->ready || n->fault || !n->block_count)
         return DS35_NOT_READY;
     uint8_t protection;
     int     r = feature(n, 0xa0, &protection);

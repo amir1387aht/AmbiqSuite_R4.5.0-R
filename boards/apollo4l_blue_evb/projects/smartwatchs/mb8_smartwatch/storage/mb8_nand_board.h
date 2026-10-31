@@ -11,7 +11,10 @@
 #define MB8_NAND_1V8_CONFIRMED           0
 #define MB8_NAND_PART_GEOMETRY_CONFIRMED 0
 #define MB8_NAND_PARTITION_CONFIRMED     0
-#define MB8_NAND_WRITES_AUTHORIZED       0
+/* Confirm an independently provisioned YAFFS2 image with THIS tag layout.
+ * A successful scan of blank/stock NAND does not establish YAFFS identity. */
+#define MB8_NAND_YAFFS_PROVISIONED_CONFIRMED 0
+#define MB8_NAND_WRITES_AUTHORIZED           0
 /* Source: atc1441/ATCmiBand8fw, commit
  * 931216a15337fa371f3a7d2de6dfb216a90093a4, Pinout_MiBand8.ods,
  * Tabelle1 rows59..62,67,70. Upstream labels these Flash MOSI/MISO/WP/Hold,
@@ -35,15 +38,15 @@
 /* CE0 is a software choice: pad85 selector7=NCE85 routes NCESRC=36
  * (MSPI2CEN0), active low. Upstream identifies the pad, not a CE channel.
  * SDK also permits CEN1=37; no display-controller sharing is required. */
-#define MB8_NAND_CS_CHANNEL    0u
-#define MB8_NAND_SCK_PIN       82u
-#define MB8_NAND_SCK_FUNC      0u
-#define MB8_NAND_MOSI_PIN      74u
-#define MB8_NAND_MOSI_FUNC     0u
-#define MB8_NAND_MISO_PIN      75u
-#define MB8_NAND_MISO_FUNC     0u
-#define MB8_NAND_CS_PIN        85u
-#define MB8_NAND_CS_FUNC       7u
+#define MB8_NAND_CS_CHANNEL 0u
+#define MB8_NAND_SCK_PIN    82u
+#define MB8_NAND_SCK_FUNC   0u
+#define MB8_NAND_MOSI_PIN   74u
+#define MB8_NAND_MOSI_FUNC  0u
+#define MB8_NAND_MISO_PIN   75u
+#define MB8_NAND_MISO_FUNC  0u
+#define MB8_NAND_CS_PIN     85u
+#define MB8_NAND_CS_FUNC    7u
 /* WP#/HOLD# must be verified tied high externally for the x1 backend. */
 #define MB8_NAND_WP_HOLD_HIGH_CONFIRMED 0
 /* 12MHz bring-up; verified dedicated MSPI/IOM may use48MHz, never >48MHz.
@@ -66,6 +69,7 @@ struct mb8_nand_board_config
     uint32_t part_geometry_confirmed;
     uint32_t partition_confirmed;
     uint32_t writes_authorized;
+    uint32_t yaffs_provisioned_confirmed;
     uint32_t mspi;
     uint32_t io2_pin, io2_func, io3_pin, io3_func;
     uint32_t qspi_io23_pullups_confirmed, qspi_max_clock_validated, mspi_clkond4;

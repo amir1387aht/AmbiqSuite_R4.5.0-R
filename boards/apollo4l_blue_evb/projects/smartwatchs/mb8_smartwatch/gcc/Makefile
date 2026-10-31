@@ -9,8 +9,22 @@ OBJCOPY := $(TOOLCHAIN)-objcopy
 SIZE := $(TOOLCHAIN)-size
 JOBS ?= 8
 GPU_PROFILE ?= 0
-WATCH_NAND_YAFFS2 ?= 0
+WATCH_NAND_YAFFS2 ?= 1
 WATCH_NAND_MSPI_QUAD ?= 1
+# Temporary startup diagnostics. Permanent capacity report is independent.
+WATCH_NAND_STARTUP_TESTS ?= 1
+WATCH_NAND_TEST_WRITE ?= 0
+ifneq ($(filter $(WATCH_NAND_STARTUP_TESTS),0 1),$(WATCH_NAND_STARTUP_TESTS))
+$(error WATCH_NAND_STARTUP_TESTS must be 0 or 1)
+endif
+ifneq ($(filter $(WATCH_NAND_TEST_WRITE),0 1),$(WATCH_NAND_TEST_WRITE))
+$(error WATCH_NAND_TEST_WRITE must be 0 or 1)
+endif
+ifeq ($(WATCH_NAND_TEST_WRITE),1)
+ifneq ($(WATCH_NAND_YAFFS2):$(WATCH_NAND_STARTUP_TESTS),1:1)
+$(error WATCH_NAND_TEST_WRITE requires WATCH_NAND_YAFFS2=1 WATCH_NAND_STARTUP_TESTS=1)
+endif
+endif
 ifneq ($(filter $(WATCH_NAND_MSPI_QUAD),0 1),$(WATCH_NAND_MSPI_QUAD))
 $(error WATCH_NAND_MSPI_QUAD must be 0 or 1)
 endif
@@ -64,9 +78,12 @@ FREERTOS_DIR := $(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source
 RTOS_SRC := $(addprefix $(FREERTOS_DIR)/,queue.c tasks.c timers.c list.c event_groups.c)
 RTOS_SRC += $(FREERTOS_DIR)/portable/GCC/AMapollo4/port.c $(FREERTOS_DIR)/portable/MemMang/heap_4.c
 SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(AMBIQ_SRC) $(NEMA_SRC) $(UTIL_SRC) $(RTOS_SRC) startup_gcc.c
-# Additive storage port: no startup calls and no LVGL/display dependencies.
+# Isolated NAND branch: guarded startup worker, no LVGL/display dependencies.
 ifeq ($(WATCH_NAND_YAFFS2),1)
 NAND_SRC := $(wildcard ../storage/*.c ../storage/yaffs2/*.c)
+ifeq ($(WATCH_NAND_STARTUP_TESTS),0)
+NAND_SRC := $(filter-out ../storage/mb8_storage_startup_tests.c,$(NAND_SRC))
+endif
 ifeq ($(WATCH_NAND_MSPI_QUAD),1)
 NAND_SRC := $(filter-out ../storage/mb8_nand_iom.c,$(NAND_SRC))
 else
@@ -84,6 +101,7 @@ INCLUDE_DIRS += $(NEMA_DIR)/NemaGFX_SDK/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/common/m
 INCLUDE_DIRS += $(APP_DIRS) ../storage
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
 CPPFLAGS += -DWATCH_NATIVE_RGB565=1 -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_COPY=$(GPU_COPY) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
+CPPFLAGS += -DWATCH_NAND_STARTUP_TESTS=$(WATCH_NAND_STARTUP_TESTS) -DWATCH_NAND_TEST_WRITE=$(WATCH_NAND_TEST_WRITE)
 CPPFLAGS += -DWATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) -DWATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD)
 ifeq ($(WATCH_NAND_YAFFS2),1)
 CPPFLAGS += -I../storage/yaffs2 -DCONFIG_YAFFS_DIRECT -DCONFIG_YAFFS_YAFFS2
@@ -95,7 +113,7 @@ ARCH := -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
 CFLAGS := $(ARCH) -std=gnu11 -O2 -g3 -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -MMD -MP
 LDFLAGS := $(ARCH) -nostartfiles -static -Tlinker_script.ld -Wl,--gc-sections,--entry,Reset_Handler,-Map,$(CONFIG)/$(TARGET).map,--print-memory-usage
 ifeq ($(WATCH_NAND_YAFFS2),1)
-# Keep opt-in public entry points link-checked without adding startup activity.
+# Keep all public entry points link-checked alongside the guarded startup worker.
 LDFLAGS += -Wl,--undefined=mb8_storage_mount,--undefined=mb8_storage_unmount
 LDFLAGS += -Wl,--undefined=yaffs_open,--undefined=yaffs_read,--undefined=yaffs_write,--undefined=yaffs_fsync,--undefined=yaffs_close
 endif
@@ -107,7 +125,7 @@ NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 FORCE:
 $(CONFIG)/.compiler-flags: FORCE
 	@mkdir -p $(CONFIG)
-	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) WATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD) CFLAGS=$(CFLAGS)' > $@.tmp
+	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) WATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD) WATCH_NAND_STARTUP_TESTS=$(WATCH_NAND_STARTUP_TESTS) WATCH_NAND_TEST_WRITE=$(WATCH_NAND_TEST_WRITE) CFLAGS=$(CFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 

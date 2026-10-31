@@ -1,9 +1,12 @@
 MI BAND 8 NAND / YAFFS2 DIRECT PORT: MSPI 1-1-4 QUAD
 ================================
-Status: opt-in software port, NOT a validated on-watch storage driver.
-No startup calls, automatic format, guessed pins, or default partition are added.
+Status: guarded experimental startup diagnostics, NOT a validated on-watch driver.
+No automatic format, guessed pins, or default partition are added.
 Pin defaults now follow the published ATC map; all confirmation guards stay off.
-Default WATCH_NAND_YAFFS2=0 leaves the existing watch pipeline unchanged.
+On THIS isolated NAND branch WATCH_NAND_YAFFS2 defaults1: a low-priority startup
+worker reports status/capacity after MCU/UART/Nema initialization. Unconfirmed
+defaults print SKIP/unavailable WITHOUT touching hardware. Explicit=0 excludes
+the worker/storage; main/display/LVGL branches are not changed.
 Do not flash a storage-enabled build as proof that its wiring is correct.
 
 PART IDENTIFICATION / EVIDENCE
@@ -102,13 +105,17 @@ SAFE ENABLE PROCEDURE
    This48MHz selection is an in-spec controller ceiling, not measured bandwidth.
 5. Build from project/gcc, e.g.:
    PATH=/path/to/arm-gcc/bin:$PATH make -j6 WATCH_NAND_YAFFS2=1 WATCH_NAND_MSPI_QUAD=1 CONFIG=bin-nand
-   Makefile keeps mount/unmount/open/read/write/fsync/close link-checked even though
-   they are not called from startup. Do not use bin-nand on hardware yet.
+   Makefile keeps mount/unmount/open/read/write/fsync/close link-checked. Startup
+   calls are now explicitly guarded; do not enable physical confirmations blindly.
    WATCH_NAND_MSPI_QUAD=1 is the storage-enabled default;=0 builds legacy IOM.
-   WATCH_NAND_YAFFS2=0 still excludes ALL storage and leaves startup unchanged.
-6. Integrate an explicit call from ONE dedicated low-priority FreeRTOS storage
-   worker after scheduler start: mb8_storage_mount(true). Print/check its return
-   and mb8_storage_status(). It probes E5 A1 BEFORE permitting any writes.
+   WATCH_NAND_YAFFS2=0 still excludes ALL storage and the new worker.
+6. The startup worker is created at the END of mcu_init after UART, GPU/Nema and
+   sensor initialization. It first probes E5 A1/status with EMPTY array range
+   (first0,count0), requiring electrical/part guards but NO partition guess. Then
+   it attempts mb8_storage_mount(true), requiring confirmed partition boundaries
+   AND new YAFFS_PROVISIONED_CONFIRMED=1. Confirm an independently provisioned
+   YAFFS2 image with this exact tag layout; stock/blank NAND or successful mount
+   alone is NOT proof. It never formats. All flags default0.
    No ISR, LVGL/render task, timer daemon, or pre-scheduler calls are supported.
    Queue file requests from other tasks to this worker. YAFFS Direct has a mutex;
    the single-worker rule additionally protects its global last-error state.
@@ -133,7 +140,8 @@ SAFE ENABLE PROCEDURE
    power faults beyond the NAND's specified behavior; validate on the real watch.
 9. Resolve gcc/Makefile additions manually when merging with the LVGL8.4 branch.
    Storage includes no LVGL headers/types and changes no UI, allocator, panel,
-   startup, profiler, fonts, or FPS files. This branch is based on storage00f74e4, whose base is main d6786d9.
+   profiler, fonts, or FPS files. The sole app hook now starts the guarded
+   worker after mcu_init completes peripheral/GPU setup. This branch is based on storage00f74e4, whose base is main d6786d9.
 
 PERFORMANCE / RESOURCE CHOICES
 - Dedicated MSPI quad DMA with shared-SRAM,32-byte-aligned1024B TCB and2176B
@@ -223,7 +231,7 @@ VALIDATION OF THIS SOURCE SNAPSHOT (NO ON-DEVICE TESTING)
 SOURCE-BASED PIN UPDATE VALIDATION
 - The pin map changes only board defaults and this existing guide. Electrical,
   geometry, partition, write and max-clock confirmations remain zero; no
-  startup accesses or autoformat are added. CLOCK_HZ remains12MHz.
+  unguarded startup accesses or autoformat are added. CLOCK_HZ remains12MHz.
 - External ASan/UBSan tests use the actual SDK pin table/header and extracted
   real backend validation/guard code: all six sourced pin/function pairs pass
   on MSPI2; wrong controller, selector, duplicate/swapped lane, display pad,
@@ -233,3 +241,76 @@ SOURCE-BASED PIN UPDATE VALIDATION
 - Real ARM GCC14.2.1 quad/default builds are rerun for this update. Earlier
   transport/protocol fault results above belong to the prior implementation;
   no hardware tests or new throughput measurements are implied by pin mapping.
+
+STARTUP REPORT / TEMPORARY TESTS (THIS NAND BRANCH ONLY)
+Defaults: WATCH_NAND_YAFFS2=1 WATCH_NAND_STARTUP_TESTS=1 WATCH_NAND_TEST_WRITE=0.
+Plain ./flash.bat therefore includes the worker/report, not silent support only.
+With current board confirmations all0, EXPECTED output includes:
+  [NAND] test-write request=0 (default0); actual writes also require ...
+  [NAND] probe SKIP/FAIL: electrical/pinout/part confirmations missing; no hardware touched
+  [NAND] raw capacity unavailable: ID not successfully probed
+  [NAND] filesystem used / total - free: unavailable: ...
+  [NAND test] RO checks SKIP: probe/electrical guards failed
+  [NAND test] write/delete SKIP: WATCH_NAND_TEST_WRITE=0
+These are expected guarded logs, NOT measured on-watch capacity values.
+
+After actual electrical/identity validation, ID-only probe reports identified
+raw MAIN geometry capacity134217728 bytes without assigning an array partition.
+It cannot read/program/erase/mark/unlock ANY array address in that zero range.
+Necessary volatile reset/QE/ECC configuration/restoration is allowed, including
+RAW BBM ECC toggling on later partition scans; no protection unlock in RO mode.
+If status read fails, status is explicitly unavailable, not invented0x00.
+Without confirmed partition/provisioned YAFFS, filesystem report stays unavailable.
+
+Mounted report derives signed64-checked yaffs_totalspace/yaffs_freespace values:
+  used_or_unavailable / total - free: <total-free> / <total> - <free> bytes
+Each quantity also has KiB and MiB labels, separately from raw chip/partition MAIN.
+YAFFS total excludes n_reserved_blocks but NOT every bad/checkpoint overhead;
+free includes upstream cache/deletion/checkpoint adjustments. Difference includes
+metadata, bad-block and other unavailable space, NOT sum of user file lengths.
+Dead blocks, GC-reserved blocks and checkpoint-present blocks provide context.
+Negative/inconsistent API returns produce unavailable, never unsigned wrap/clamp.
+
+Temporary tests live only in mb8_storage_startup_tests.c/.h. Default RO tests:
+<=3 partition-relative pages x256B read twice/checksum, bounded16 root entries,
+at most one nonempty regular file prefix<=256B read twice, no content/name dump,
+no symlink following. No confirmed mount/range -> explicit SKIP.
+To remove tests LATER while keeping permanent startup print:
+  ./flash.bat WATCH_NAND_STARTUP_TESTS=0 WATCH_NAND_TEST_WRITE=0
+The two temporary files can then be deleted; permanent worker/report is separate.
+
+EXPLICIT DESTRUCTIVE-TO-TEST-FILE OPT-IN (defaultOFF):
+  ./flash.bat WATCH_NAND_STARTUP_TESTS=1 WATCH_NAND_TEST_WRITE=1
+This flag alone does NOT authorize any writes: all electrical, pinout, partition,
+YAFFS_PROVISIONED and WRITES_AUTHORIZED confirmations are additionally required.
+One bounded1024B unique file is exclusively created (O_EXCL,<=8 collision tries),
+pattern-written, fsynced, closed, WARM unmounted/remounted RO, reopened and read
+back against the pattern. Warm remount discards YAFFS caches so verification
+reaches NAND, unlike same-fd read or merely closing a clean cached file. Then
+remount RW only to delete THIS created file, check ENOENT and sync. Existing files
+are never overwritten/unlinked. Every stage/error/residual test path is reported.
+Deletion is logical unlink, NOT guaranteed physical erase; warm remount is NOT
+a hardware power-cut endurance/durability proof. Write profile prints its request
+BEFORE initial RO phase, so initial RO message is not a whole-boot no-write claim.
+
+Worker retains its TaskHandle suspended after one-shot operation, even if close
+fails; no stale deleted-task owner. All startup reads/filesystem/tests execute
+there. Future application I/O must be dispatched to this same worker; no request
+queue or other task is currently scheduled. Worker stack1536 words=6144B plus
+FreeRTOS TCB, temporary static test buffers512B; YAFFS96KiB request budget unchanged.
+
+NEW VALIDATION (external harnesses, not firmware stubs): actual YAFFS/adapter/NAND
+core on mock NAND with ASan+UBSan verifies zero-activity guards, ID-only no-array
+range/no-unlock, JEDEC/status errors, provisioned-format refusal, RO zero main/OOB
+program/erase/mark/protection unlock, bad/reserved accounting and signed capacity
+errors, live worker ownership, directory/page repeats, exclusive collision
+preservation, real media read after warm remount and write/fsync/readback/close/
+unlink/absence/sync fault cleanup. Host-only substitutions replace MCU-address
+validation with host-pointer validation and FreeRTOS/HAL with mocks. Actual ARM
+builds use real compiler/vendor archives: disabled, defaultRO, write-opt-in and
+report-only/testsOFF profiles. No on-watch capacity, timing or power-cut claims.
+
+Final startup ARM text+data sizes: RO/default470744B, write-opt-in473016B,
+report-only468120B, disabled412672B. Plain branch-default build is byte-identical
+to explicit RO profile. Existing SDK/upstream warnings remain; no new integration
+warnings. External17-case ASan/UBSan suite passed, independently rerun by parent.
