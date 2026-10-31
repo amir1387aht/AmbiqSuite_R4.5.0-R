@@ -10,7 +10,8 @@ fallback = letter[letter.index('if (gpu_bitmap == NULL)'):letter.index('map_p = 
 assert fallback.index('lv_gpu_ambiq_nema_cl_submit_link(pLabelCL)') < fallback.index('lv_gpu_ambiq_nema_wait(NULL)') < fallback.index('return LV_RES_INV;')
 assert '++watch_gpu_stats.gpu_glyphs;' in letter
 assert 'lv_area_get_size(draw_area) <= 256' in backend
-assert 'watch_gpu_note_completed(cl->submission_id, nema_reg_read(NEMA_CLID))' in backend
+assert backend.index('int32_t submission_id = cl->submission_id;') < backend.index('nema_cl_wait(cl)')
+assert 'watch_gpu_note_completed(submission_id, nema_reg_read(NEMA_CLID))' in backend
 config = (P/'src/lv_conf.h').read_text()
 assert re.search(r'#define LV_USE_PERF_MONITOR\s+1\b', config)
 assert re.search(r'#define LV_USE_GPU_AMBIQ_NEMA\s+1\b', config)

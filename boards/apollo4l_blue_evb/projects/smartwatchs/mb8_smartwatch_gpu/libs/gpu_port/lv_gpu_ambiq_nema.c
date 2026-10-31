@@ -274,13 +274,15 @@ static lv_res_t lv_gpu_ambiq_nema_draw_line_dashed(const lv_point_t * point1,
  * be in shared SRAM; packed MRAM UI images use LVGL's CPU fallback. */
 static void watch_wait_cl(nema_cmdlist_t *cl)
 {
+    /* The SDK resets submission_id to -1 inside a successful wait. */
+    int32_t submission_id = cl->submission_id;
     uint32_t start = watch_profile_start();
     if (nema_cl_wait(cl) != 0) {
         LV_LOG_ERROR("GPU command-list wait failed; refusing to flush stale pixels");
         for (;;) { /* Inspect GPU IRQ 28 / error status with the debugger. */ }
     }
     WATCH_PROFILE_ADD(gpu_wait_cycles, start);
-    watch_gpu_note_completed(cl->submission_id, nema_reg_read(NEMA_CLID));
+    watch_gpu_note_completed(submission_id, nema_reg_read(NEMA_CLID));
 }
 
 static bool watch_gpu_accessible(const void *ptr)

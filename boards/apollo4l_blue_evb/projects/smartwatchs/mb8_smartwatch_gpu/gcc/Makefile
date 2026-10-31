@@ -9,6 +9,7 @@ OBJCOPY := $(TOOLCHAIN)-objcopy
 SIZE := $(TOOLCHAIN)-size
 JOBS ?= 8
 GPU_PROFILE ?= 0
+GPU_CONVERT ?= 1
 SHELL := /bin/bash
 
 LVGL_DIR := $(ROOT_DIR)/third_party/LVGL/lvgl
@@ -52,7 +53,7 @@ INCLUDE_DIRS += $(LVGL_DIR) $(LVGL_DIR)/src $(LVGL_DIR)/src/misc $(LVGL_DIR)/src
 INCLUDE_DIRS += $(NEMA_DIR)/NemaGFX_SDK/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/common/mem $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaDC $(NEMA_DIR)/NemaGFX_SDK/include/tsi/common $(NEMA_PLATFORM_DIR)
 INCLUDE_DIRS += $(APP_DIRS)
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
-CPPFLAGS += -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
+CPPFLAGS += -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_CONVERT=$(GPU_CONVERT) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
 ARCH := -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
 CFLAGS := $(ARCH) -std=gnu11 -O2 -g3 -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -MMD -MP
 LDFLAGS := $(ARCH) -nostartfiles -static -Tlinker_script.ld -Wl,--gc-sections,--entry,Reset_Handler,-Map,$(CONFIG)/$(TARGET).map,--print-memory-usage
@@ -65,7 +66,7 @@ NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 FORCE:
 $(CONFIG)/.compiler-flags: FORCE
 	@mkdir -p $(CONFIG)
-	@printf '%s\n' 'GPU_PROFILE=$(GPU_PROFILE) TOOLCHAIN=$(TOOLCHAIN) CFLAGS=$(CFLAGS)' > $@.tmp
+	@printf '%s\n' 'GPU_PROFILE=$(GPU_PROFILE) GPU_CONVERT=$(GPU_CONVERT) TOOLCHAIN=$(TOOLCHAIN) CFLAGS=$(CFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 

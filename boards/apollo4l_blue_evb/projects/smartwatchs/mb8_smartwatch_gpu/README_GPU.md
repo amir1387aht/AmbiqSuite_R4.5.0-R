@@ -1,177 +1,167 @@
-# Original watch application with Apollo4 Lite Nema GPU
+# Original Mi Band 8 application with Apollo4 Lite Nema GPU
 
-This project runs the original `mb8_smartwatch` application/menu with SDK-matched
-Ambiq LVGL 8.1.0 and Apollo4 Lite Nema GPU support. The original project is untouched.
-There is a single application path: original menu, light sensor and accelerometer.
-No alternate diagnostic UI, diagnostic timer or smoke-test mode is included.
-The normal app has one-time GPU completion logging and optional UART profiling.
+This sibling project runs the original `mb8_smartwatch` menu with SDK-matched
+Ambiq LVGL 8.1.0 and Apollo4 Lite Nema GPU support. The original project is
+untouched. The GPU project keeps the original menu, assets, touch handling,
+fonts and bottom-middle FPS/CPU overlay. There is no alternate test UI.
 
-## Original application settings
+## Current configuration
 
-- `screen_menu_create()` is called unconditionally. Original menu source is unchanged.
-- Light/accelerometer initialization and tasks always run, as in the original.
-- `LV_USE_PERF_MONITOR=1`, positioned at `LV_ALIGN_BOTTOM_MID`: FPS and CPU overlay.
-- All original Montserrat font options are restored (8 through 48, every even size).
-- Original `LV_USE_LOG=0` and `LV_USE_MEM_MONITOR=0` are restored.
-- The original commented `ui_init()` remains commented. UI layout was not redesigned.
+- `screen_menu_create()` always runs; the commented `ui_init()` stays commented.
+- `LV_USE_PERF_MONITOR=1` at `LV_ALIGN_BOTTOM_MID`, enforced at compile time.
+- Original Montserrat font options (8..48, even sizes), logging off, memory
+  monitor off. Original 16 ms display/input periods are unchanged.
+- Light sensor initialization/task remain enabled.
+- Accelerometer initialization remains enabled, including its single status
+  line. At the user's request, `acclSens_task()` deletes itself and returns
+  immediately, so it does not read/format/print the continuous sensor stream.
+  A bare task return is unsafe in FreeRTOS; `vTaskDelete(NULL)` comes first.
+- GPU power is retained. Production deep-sleep/power cycling is not qualified.
 
 ## Build and flash
 
-Use Arm GNU Toolchain 14.2.Rel1 (GCC 14.2.1) with its bin directory on PATH.
-Build from this project's `gcc` directory with GNU make and POSIX-compatible shell
-tools (for example Git Bash/MSYS2 on Windows):
+Use Arm GNU Toolchain 14.2.Rel1 (GCC 14.2.1), GNU make and a POSIX shell
+(e.g. Git Bash/MSYS2). From this project's `gcc` directory:
 
 ```sh
 make clean
-make -j8
 ./flash.bat
 ```
 
-Output: `gcc/bin/mb8_smartwatch_gpu.bin`, `.axf` and `.map`.
-The batch file uses your original `make` plus
-`C:\Users\Padidar\SEGGER\JLink_V812a\JLink.exe` invocation. A failed build stops
-before programming. Keep your existing equivalent two-line batch file if preferred.
-The J-Link command file loads only `bin/mb8_smartwatch_gpu.bin` at `0x00018000`,
-then resets/runs. Original device `AMA4B2KP-KXR`, SWD, 4000 kHz are retained.
-These are inherited watch settings, not independent silicon identification.
+For on-device profiling, use the explicit wrapper:
 
-Running the script overwrites the application image. Keep a known-good firmware
-and working SWD recovery access. No physical flashing was performed by the agent.
-
-Source enumeration uses recursive GNU make wildcards, not shell find/sort;
-parse-time checks catch missing application/LVGL sources before linking.
-
-## GPU-specific changes that remain
-
-This is not a byte-for-byte restoration of the old non-GPU build. The following
-adaptations are necessary to keep the selected GPU implementation compatible:
-
-1. SDK LVGL 8.1.0, Ambiq port archive, and Apollo4l Nema HAL are compiled together.
-   The original LVGL 8.4 library is not compiled or mixed into this ABI.
-2. Vendor porting ABI uses 32-bit LVGL color. Two aligned BGRA8888 draw buffers
-   render into shared SRAM; completed regions are converted into a persistent
-   full-panel RGB565 staging frame. On LVGL's last flush, one contiguous dirty-row
-   range is sent through the unchanged MSPI/Raydium panel driver. Generated image bytes/descriptors were
-   adapted to BGRA8888 without changing their source colors or alpha.
-3. Nema allocators are initialized before sensor/panel DMA. Setup stack, task
-   allocation checks, GPU interrupt/completion handling and DAXI flushing remain.
-4. The LVGL task owns GPU/panel transitions. Sleep/wake and brightness requests
-   are coordinated at frame/DMA boundaries rather than interrupting GPU work.
-5. A FreeRTOS-derived millisecond tick drives LVGL. GPU power is retained; automatic
-   deep-sleep/power cycling is not qualified and has not been restored blindly.
-6. Existing packed fonts stay packed in MRAM; their descriptors are not mutated.
-   A 96 KiB shared-SRAM cache converts immutable A4 glyphs to byte-aligned rows
-   for direct Nema text rendering. `LV_AMBIQ_FONT_REALIGN_BITMAP` stays zero so
-   CPU fallback continues to interpret the original packed data correctly.
-   Five local SDK font copies and small wrappers for the other incompatible SDK
-   descriptors reconcile SDK const declarations without changing font bitmap data.
-
-Shared SDK files are not modified. No EVB display shield, NemaDC/DSI transport, or
-external PSRAM configuration is imported. Unused legacy library/reference assets
-remain available in `../mb8_smartwatch` instead of being duplicated here.
-
-## Display pipeline performance correction
-
-The original application had full-height RGB565 draw buffers. The initial GPU
-port used two 64-line BGRA buffers but still called the TE-gated panel transfer
-for every partial flush. A full-height refresh therefore queued eight separate
-panel transfers, each waiting for another TE pulse. LVGL also lacked a display
-wait callback and spun while transfers were pending. These are transport
-serialization defects, not evidence that the GPU itself takes that long to draw.
-
-The corrected pipeline:
-
-1. Keep the small GPU draw buffers, but copy each completed area into a separate
-   persistent 192 x 490 RGB565 staging frame.
-2. Immediately release non-final partial draw buffers after copying, without
-   starting panel DMA or consuming a TE pulse.
-3. Use `lv_disp_flush_is_last()` to submit one full-width dirty-row range for the
-   complete refresh. Union dirty rows across multiple invalid areas; preserve
-   previously displayed pixels outside modified rectangles.
-4. The unchanged original panel driver waits for TE once for this transfer.
-5. Keep the final LVGL flush pending until the DMA callback completes. LVGL's
-   dedicated display wait callback blocks on an ISR-signaled binary semaphore
-   instead of burning CPU in its flushing loop. The MSPI IRQ priority permits
-   FreeRTOS FromISR calls. GPU and panel completion semaphores are independent.
-
-The staging frame is initialized before use and is never modified while DMA is
-reading it. DAXI is flushed before DMA. Narrow invalidations can transmit extra
-columns because rows are sent full-width, but untouched rows are not transmitted.
-No menu/widget/font/monitor/flash-script changes accompany this correction.
-
-This fixes identified source-level serialization. On-device FPS, visual integrity,
-CPU load and power are not measured by host tests. The standard LVGL CPU overlay
-uses handler busy/idle timing, which includes time spent blocked inside the
-handler; it is not a direct FreeRTOS CPU-utilization measurement. Its calculation
-has not been changed to make the displayed result look better.
-
-## GPU text acceleration and frame pacing
-
-The earlier port disabled the direct GPU letter path because packed MRAM fonts
-cannot be passed directly to Nema. The fallback allocated shared masks and could
-submit/wait for a GPU command list for each tiny scanline fill. These are now
-addressed without changing the UI or the monitor calculation:
-
-- Cache immutable MRAM A4 glyphs in GPU-accessible shared SRAM, with byte-aligned
-  rows including odd-width glyphs. Batch text commands through the existing Ambiq
-  GPU renderer. Cache storage is allocated from the GPU heap before rendering.
-- Cache at most 256 distinct glyphs / 96 KiB; do not evict data still referenced
-  by GPU commands. Unsupported/dynamic fonts, allocation failure or a full cache
-  use CPU fallback. Submit and complete an open text batch before that fallback.
-- Use CPU blending for masked fills of at most 256 pixels rather than paying for
-  a tiny GPU command list and wait. This threshold is a tuning choice, not a
-  measured optimum for this watch.
-- Respect `lv_timer_handler()`'s next deadline instead of always sleeping another
-  5 ms. The original 16 ms refresh/input periods remain unchanged.
-- Require the standard FPS/CPU monitor and Nema backend at compile time. Monitor
-  position remains bottom-middle. No alternate screen or smoke-test mode exists.
-
-### Confirm which firmware and GPU path are running
-
-After reset, the existing debug UART prints:
-
-```text
-GPU glyph-cache-v1: FPS monitor=1 refresh=16 ms profile=0
+```sh
+./flash_profile.bat
 ```
 
-After a text-bearing command list completes, it prints once:
+It sets `GPU_PROFILE=1` for the existing flasher's nested make. Do not use
+`make GPU_PROFILE=1 && ./flash.bat`: the second make normally rebuilds with
+profiling off. Alternatively, `GPU_PROFILE=1 ./flash.bat` in Git Bash works.
+Plain `./flash.bat` returns to profiling-off unless the environment exports it.
+
+The original make/J-Link invocation, build-failure gate, device `AMA4B2KP-KXR`,
+SWD/4000 kHz and application origin `0x00018000` are retained. The existing path
+is `C:\Users\Padidar\SEGGER\JLink_V812a\JLink.exe`. These are inherited
+settings, not independent silicon identification. No physical flashing was
+performed by the agent. Keep known-good firmware and working SWD recovery.
+
+Output: `gcc/bin/mb8_smartwatch_gpu.bin`, `.axf` and `.map`.
+Source discovery uses GNU make wildcards rather than shell find/sort.
+Changing GPU_PROFILE or GPU_CONVERT updates the compiler-flag stamp and rebuilds
+objects, even when reusing an output directory.
+
+Separate builds without flashing:
+
+```sh
+make -j8
+make CONFIG=bin-profile GPU_PROFILE=1 -j8
+make CONFIG=bin-cpu GPU_PROFILE=1 GPU_CONVERT=0 -j8
+```
+
+`GPU_CONVERT=0` uses CPU format conversion/copying but keeps the new two-frame
+pipeline and GPU UI renderer. It is an A/B control, not a restoration of an older
+commit. To flash that control from Git Bash:
+
+```sh
+GPU_CONVERT=0 ./flash_profile.bat
+```
+
+## Why the transport pipeline changed
+
+The user's active-scrolling logs showed about 29 completed transfers/second
+while TE stayed near 59 Hz. Reported conversion time was 359 ms per profiling
+interval, roughly 12 ms per completed frame. The old pipeline converted BGRA
+pixels on the CPU and shared one panel staging frame, preventing writes to that
+frame while TE/DMA owned it. Those are concrete serialization costs; the TE
+signal does not establish a fundamental 30 Hz panel limit.
+
+The current pipeline:
+
+1. Retain the vendor's required 32-bit BGRA8888 LVGL ABI and the two small
+   192x64 render buffers. Do not mix the original LVGL 8.4 sources with the archive.
+2. Keep two separate 192x490 RGB565 panel frames. One stays in the existing static
+   general shared region; the second is allocated, 32-byte aligned, from the
+   existing GPU shared heap. Stop with an explicit message if allocation fails.
+3. At the first partial flush of a refresh, select the frame other than the
+   latest submitted frame. Copy the latest complete RGB565 image into it using
+   Nema, preserving all unchanged pixels for arbitrary partial invalidations.
+   GPU and MSPI may read the latest frame concurrently; neither writes it.
+4. Convert each completed BGRA rectangle with a Nema source-copy blit to RGB565,
+   using explicit row strides and clipping. Round the destination binding down
+   to a 64-bit boundary and clip past its prefix so narrow/even-column updates
+   do not violate texture alignment or overwrite neighboring pixels.
+5. Complete each conversion before LVGL reuses its source draw buffer. Union
+   dirty rows across partial rectangles and send one full-width dirty-row range
+   only on the last flush. Unchanged rows are not transmitted.
+6. Before queuing that new panel frame, wait for the previous panel transfer to
+   finish using the ISR-signaled semaphore. Keep the original TE-gated driver;
+   do not remove TE or raise its MSPI clock to make a benchmark look faster.
+7. Once queued, release the LVGL draw buffer immediately: MSPI owns the separate
+   RGB565 frame, not that BGRA draw buffer. The next refresh can render into the
+   other panel frame while the preceding frame waits for TE or transfers.
+8. The DMA ISR increments the completed-transfer count and signals the semaphore;
+   it no longer releases LVGL flushes. Sleep waits for panel idle before shutdown.
+
+The conversion CL is allocated once (1024 bytes) and rewound only after completion.
+Unsupported/allocation/command-build failures fall back to the CPU reference
+conversion. A submitted transfer/wait failure stops rather than handing incomplete
+pixels to MSPI. CPU-written shared pixels are explicitly committed before GPU
+reads/DAXI invalidation. Shared SDK files are not modified; no external PSRAM,
+EVB shield display stack, DSI or NemaDC transport is imported.
+
+## GPU text and CPU fallback
+
+Immutable packed MRAM A4 fonts are converted into a 96 KiB shared-SRAM glyph
+cache for direct Nema text rendering. Original bitmaps/descriptors stay packed;
+`LV_AMBIQ_FONT_REALIGN_BITMAP` stays zero for correct CPU fallback interpretation.
+The cache has 256 entries and does not evict GPU-referenced data. Full/unsupported
+or dynamic glyphs submit/finish the open text batch before CPU fallback. Tiny
+masked fills of at most 256 pixels use CPU blending to avoid per-scanline GPU
+submit/wait overhead. This threshold is a tuning choice, not a measured optimum.
+Task pacing follows LVGL's next deadline rather than always sleeping another 5 ms.
+
+## Runtime checks and profiling
+
+A GPU-conversion build should print:
 
 ```text
+GPU conversion: Nema BGRA8888 -> RGB565 enabled.
+GPU glyph-cache-v1: FPS monitor=1 refresh=16 ms profile=1
+Panel pipeline: double RGB565 frames, render/DMA overlap.
 GPU TEXT completed: submitted=... HW_CLID=... glyphs=...
 ```
 
-The latter is emitted after a Nema wait and a matching/advanced hardware CLID
-read; it is stronger evidence than just `LV_USE_GPU_AMBIQ_NEMA=1`. It does not
-prove every primitive is accelerated, correct pixels, or a particular frame rate.
-If absent, report the startup log rather than assuming GPU text is working.
+The text completion check now captures the submitted ID BEFORE `nema_cl_wait()`:
+the SDK clears that field to -1 after a successful wait, which previously
+suppressed the one-time confirmation. The log checks hardware CLID advancement;
+it does not prove all primitives, correct colors or a particular frame rate.
 
-### Optional on-watch profiling
+With profiling enabled, keep the watch awake and scroll the same menu continuously
+for several seconds. Capture complete `GPUprof` lines:
 
-From Git Bash in this project's `gcc` directory:
+- `dma_fps`: actual completed panel DMA transfers/second, not LCD scan frequency.
+  The LVGL overlay can count a queued frame before DMA finishes; use dma_fps to
+  compare delivered frames, not just rendered/queued frames.
+- `te_hz`: observed TE edges/second.
+- `cl`, `glyph_gpu`, `glyph_cpu`, `cache_new`, `cache_hit`: interval counts.
+- `conv_gpu`, `conv_cpu`: rectangle conversions by path (frame snapshots excluded).
+- `handler_ms`: inclusive LVGL handler interval total.
+- `convert_ms`: rectangle conversion setup/wait time; now GPU rather than the old
+  CPU loop when conv_gpu is positive. `framecopy_ms` separately tracks snapshots.
+- `panelwait_ms`: time blocked waiting to reuse the preceding transfer's slot;
+  no longer includes waiting for the newly queued transfer inside LVGL.
+- `tewait_ms`, `dma_ms`: queued-to-TE and TE-launch-to-callback interval totals.
+- `gpuwait_ms`: LVGL drawing-command waits (conversion waits are in convert_ms).
+- `hw`: latest observed completed hardware CLID.
 
-```sh
-GPU_PROFILE=1 ./flash.bat
-```
+DWT-cycle timings assume configured 192 MHz and can be affected by clock gating,
+sleep and other tasks. Totals overlap/nest and must not be added into utilization
+percentages. UART profiling adds overhead and is off by default. The ordinary
+FPS/CPU overlay is unchanged; its CPU figure is LVGL handler busy/idle timing,
+not an independent FreeRTOS CPU-utilization measurement.
 
-Pass the flag to the script itself: it invokes make again. Running plain
-`./flash.bat` afterwards returns to the default profiling-off build. A compiler
-flag stamp rebuilds objects when this option changes, even in the same output
-directory. A separate host build is also possible: `make CONFIG=bin-profile GPU_PROFILE=1 -j8`.
-
-During continuous menu scrolling, capture several `GPUprof` lines from UART:
-
-- `dma_fps`: completed panel DMA transfers per second, not LCD scan frequency.
-- `te_hz`: observed TE edges per second; helps expose a panel/TE limit.
-- `cl`, `glyph_gpu`, `glyph_cpu`, `cache_new`, `cache_hit`: interval counts of
-  submissions, accepted glyph commands/fallbacks and cache activity.
-- `handler_ms`, `convert_ms`, `gpuwait_ms`, `panelwait_ms`: DWT-cycle-derived
-  interval totals at configured 192 MHz. They are inclusive/nested, not additive
-  utilization percentages; clock gating, sleep and other tasks can affect them.
-- `hw`: latest observed completed GPU hardware command-list ID.
-
-Profile output adds UART overhead and is disabled by default. Use active, awake
-scrolling for comparison. The ordinary FPS overlay stays on in both builds.
-50–60 FPS remains an on-device target, not a verified outcome of these changes.
+60 FPS remains the target, not an agent-measured result. Compile/link and host
+command tests cannot verify the watch's rasterizer, panel timing, colors or speed.
 
 ## Memory layout
 
@@ -183,21 +173,21 @@ scrolling for comparison. The ordinary FPS overlay stays on in both builds.
 | General shared SRAM | 0x10060000 | 512 KiB |
 | LVGL GPU shared pool | 0x100e0000 | 512 KiB reserved |
 
-The general shared region includes a 4 KiB MSP stack, 16 KiB C heap, draw buffers,
-188,160-byte RGB565 staging frame, and FreeRTOS heap. Current linked usage of
-that 512 KiB general shared region is 428,224 bytes (81.68%). Linker reservations/assertions prevent pool
-collisions. The glyph arena additionally consumes 96 KiB of the reserved 512 KiB
-GPU shared pool at runtime, not another static allocation in the general region.
-External allocation requests use the initialized shared pool, not PSRAM.
+The static general shared region includes the MSP/C/FreeRTOS heaps, BGRA buffers
+and first 188,160-byte panel frame. Current default linked usage is 428,288 bytes
+(81.69%). In the separately reserved GPU shared pool, the glyph arena consumes
+96 KiB, the second panel allocation requests 188,191 bytes including alignment
+slack, and the conversion CL requests 1024 bytes, in addition to SDK/allocator
+storage. Runtime checks bound the second panel frame inside that GPU pool.
+Do not count it as another static frame in the general shared region.
 
-Required vendor archives (already present in the updated SDK):
-
+Vendor archives (already in the repository):
 - `third_party/LVGL/ambiq_support/gpu_lib_apollo4/gcc/bin/lvgl_ambiq_porting.a`
 - `third_party/ThinkSi/config/apollo4l_nemagfx/gcc/bin/lib_nema_apollo4l_nemagfx.a`
 
 ## Regression checks
 
-From this project's root, with the Arm toolchain on PATH:
+From this project's root, with Arm tools on PATH:
 
 ```sh
 python3 tests/test_app_default.py
@@ -206,21 +196,21 @@ python3 tests/test_flash_config.py
 python3 tests/test_display_pipeline.py
 python3 tests/test_gpu_glyph_path.py
 python3 tests/test_font_cache_assets.py
+python3 tests/test_gpu_conversion.py
+python3 tests/test_gpu_convert_host.py
 python3 tests/validate_port.py
-cc -std=c11 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_rgb565.c -o /tmp/test_rgb565
+cc -std=c11 -O2 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_rgb565.c -o /tmp/test_rgb565
 /tmp/test_rgb565
 cc -std=c11 -O2 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_framebuffer.c -o /tmp/test_framebuffer
 /tmp/test_framebuffer
 cc -std=c11 -O2 -Wall -Wextra -Werror -Ilibs/gpu_port tests/test_glyph_cache.c -o /tmp/test_glyph_cache
 /tmp/test_glyph_cache
 python3 tests/verify_firmware.py
+python3 tests/verify_firmware.py bin-profile
+python3 tests/verify_firmware.py bin-cpu
 ```
 
-The firmware verifier checks the default `gcc/bin` directory, or accepts another
-output-directory name as its first argument. It verifies actual linked FPS/CPU
-monitor text, GPU interrupt vector, memory/buffer addresses and unresolved symbols.
-
-Compile/link and host/static checks are not hardware validation. Verify original
-menu behavior, bottom-middle FPS/CPU text, colors, touch, sensors, brightness,
-scrolling and sleep/wake on the watch. Performance and power measurements remain
-on-device work; the LVGL overlay is not an independent GPU-utilization benchmark.
+The conversion host test compiles production conversion code with actual SDK API
+headers but mocked Nema calls. It validates commands/strides/alignment, ordered
+completion, partial-pixel preservation using CPU reference execution and fallback
+behavior. It is not a GPU emulator or hardware color-validation result.

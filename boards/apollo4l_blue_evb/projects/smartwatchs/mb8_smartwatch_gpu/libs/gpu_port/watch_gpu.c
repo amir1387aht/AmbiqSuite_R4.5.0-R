@@ -8,6 +8,7 @@
 #include "am_util.h"
 #include "FreeRTOS.h"
 #include "watch_glyph_cache.h"
+#include "watch_gpu_convert.h"
 #include "watch_tick.h"
 #if !LV_USE_PERF_MONITOR || !LV_USE_LABEL || !LV_USE_GPU_AMBIQ_NEMA
 #error "This watch build requires the FPS monitor, labels and Nema GPU enabled"
@@ -17,6 +18,13 @@ volatile bool watch_gpu_ready;
 volatile watch_gpu_stats_t watch_gpu_stats;
 static int32_t first_text_submission = -1;
 static bool text_completion_reported;
+
+/* Commit CPU-produced shared pixels before GPU reads or an IRQ invalidates DAXI. */
+void watch_gpu_cpu_write_complete(void)
+{
+    __DSB();
+    am_hal_daxi_control(AM_HAL_DAXI_CONTROL_FLUSH, NULL);
+}
 
 void watch_gpu_note_submit(int32_t submission_id, uint32_t glyphs)
 {
@@ -47,7 +55,7 @@ void watch_gpu_profile_poll(void)
     if (elapsed < 1000u) return;
     watch_gpu_stats_t current = watch_gpu_stats;
     uint32_t cpu_cycles_per_ms = configCPU_CLOCK_HZ / 1000u;
-    am_util_stdio_printf("GPUprof dma_fps=%lu te_hz=%lu cl=%lu glyph_gpu=%lu glyph_cpu=%lu cache_new=%lu cache_hit=%lu handler_ms=%lu convert_ms=%lu gpuwait_ms=%lu panelwait_ms=%lu hw=%lu\r\n",
+    am_util_stdio_printf("GPUprof dma_fps=%lu te_hz=%lu cl=%lu glyph_gpu=%lu glyph_cpu=%lu cache_new=%lu cache_hit=%lu handler_ms=%lu convert_ms=%lu gpuwait_ms=%lu panelwait_ms=%lu conv_gpu=%lu conv_cpu=%lu tewait_ms=%lu dma_ms=%lu framecopy_ms=%lu hw=%lu\r\n",
         (unsigned long)((current.panel_frames - previous.panel_frames) * 1000u / elapsed),
         (unsigned long)((current.te_edges - previous.te_edges) * 1000u / elapsed),
         (unsigned long)(current.submitted_cl - previous.submitted_cl),
@@ -59,6 +67,11 @@ void watch_gpu_profile_poll(void)
         (unsigned long)((current.convert_cycles - previous.convert_cycles) / cpu_cycles_per_ms),
         (unsigned long)((current.gpu_wait_cycles - previous.gpu_wait_cycles) / cpu_cycles_per_ms),
         (unsigned long)((current.panel_wait_cycles - previous.panel_wait_cycles) / cpu_cycles_per_ms),
+        (unsigned long)(current.convert_gpu - previous.convert_gpu),
+        (unsigned long)(current.convert_cpu - previous.convert_cpu),
+        (unsigned long)((current.te_wait_cycles - previous.te_wait_cycles) / cpu_cycles_per_ms),
+        (unsigned long)((current.panel_dma_cycles - previous.panel_dma_cycles) / cpu_cycles_per_ms),
+        (unsigned long)((current.frame_copy_cycles - previous.frame_copy_cycles) / cpu_cycles_per_ms),
         (unsigned long)current.completed_hw_id);
     previous = current;
     last_ms = now;
@@ -83,6 +96,7 @@ void watch_gpu_init(void)
         configASSERT(0);
     }
     watch_gpu_glyph_cache_init();
+    watch_gpu_convert_init();
 #if WATCH_GPU_PROFILE
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;

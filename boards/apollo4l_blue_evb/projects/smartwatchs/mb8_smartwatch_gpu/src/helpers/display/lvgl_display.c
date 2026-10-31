@@ -6,21 +6,22 @@
 #include "watch_gpu.h"
 #include "watch_rgb565.h"
 #include "watch_framebuffer.h"
+#include "watch_gpu_convert.h"
 #include "semphr.h"
 
 static lv_disp_drv_t disp_drv;
 static SemaphoreHandle_t panel_dma_complete;
 static watch_dirty_rows_t dirty_rows;
 
-/* LVGL calls this while draw_buf->flushing is set. Do not burn CPU spinning
- * for TE or DMA completion; the MSPI ISR releases the dedicated semaphore. */
-static void disp_wait(lv_disp_drv_t *driver)
+/* With two panel frames, rendering the next refresh overlaps the preceding
+ * frame's TE wait/DMA. Block only before reusing the panel transfer slot. */
+static void wait_panel_idle(void)
 {
-    if (driver->draw_buf->flushing) {
+    while (display_is_busy()) {
         uint32_t start = watch_profile_start();
         BaseType_t completed = xSemaphoreTake(panel_dma_complete, pdMS_TO_TICKS(1000));
         WATCH_PROFILE_ADD(panel_wait_cycles, start);
-        configASSERT(completed == pdTRUE || !driver->draw_buf->flushing);
+        configASSERT(completed == pdTRUE || !display_is_busy());
     }
 }
 static volatile bool display_sleep_requested;
@@ -30,11 +31,14 @@ static uint8_t applied_brightness = 175;
 static lv_indev_drv_t indev_drv;
 static img_obj_t gpu_framebuffer = { .w = display_width, .h = DRAW_BUF_LINES,
                                     .format = NEMA_BGRA8888 };
-/* Keep a complete RGB565 panel image, independent of the small GPU draw buffers.
+/* Keep two complete RGB565 panel images independent of the small GPU buffers.
  * Submit dirty rows only on LVGL's last flush: the TE-driven panel transport
  * sees one transfer per refresh, not one panel refresh per 64-line stripe. */
 __attribute__((section(".display_buffer"), aligned(32)))
 static uint16_t panel_pixels[display_width * display_height];
+static uint16_t *panel_back_pixels;
+static uint16_t *panel_latest = panel_pixels;
+static uint16_t *panel_drawing;
 _Static_assert(sizeof(lv_color_t) == 4, "Ambiq GPU archive requires 32-bit color");
 
 void lvgl_display_init(void* pvParameters) {
@@ -42,6 +46,16 @@ void lvgl_display_init(void* pvParameters) {
     panel_dma_complete = xSemaphoreCreateBinary();
     configASSERT(panel_dma_complete != NULL);
     memset(panel_pixels, 0, sizeof(panel_pixels));
+    watch_gpu_cpu_write_complete();
+    void *back_alloc = lv_mem_ssram_alloc(sizeof(panel_pixels) + 31u);
+    if (!back_alloc) {
+        am_util_stdio_printf("Second panel frame allocation failed; stopped.\r\n");
+        configASSERT(0);
+    }
+    panel_back_pixels = (uint16_t *)(((uintptr_t)back_alloc + 31u) & ~(uintptr_t)31u);
+    configASSERT((uintptr_t)panel_back_pixels >= 0x100e0000u);
+    configASSERT((uintptr_t)panel_back_pixels + sizeof(panel_pixels) <= 0x10160000u);
+    am_util_stdio_printf("Panel pipeline: double RGB565 frames, render/DMA overlap.\r\n");
     display_init();
     touch_init();
 
@@ -52,7 +66,6 @@ void lvgl_display_init(void* pvParameters) {
     disp_drv.hor_res = display_width;
     disp_drv.ver_res = display_height;
     disp_drv.flush_cb = disp_flush;
-    disp_drv.wait_cb = disp_wait;
     disp_drv.gpu_wait_cb = lv_gpu_ambiq_nema_wait;
     disp_drv.draw_buf = &draw_buf;
     disp_drv.user_data = &gpu_framebuffer;
@@ -129,11 +142,17 @@ void disp_flush(lv_disp_drv_t* display, const lv_area_t* area, lv_color_t * px_m
     configASSERT(area->x2 < display_width && area->y2 < display_height);
     configASSERT(width * height <= DRAW_BUF_SIZE);
 
-    /* LVGL waits for any outstanding DMA before entering this callback. The
-     * persistent panel frame must never be modified while DMA reads from it. */
+    if (!dirty_rows.valid) {
+        /* The latest submitted frame can be read concurrently by GPU and
+         * MSPI. Never write that frame. Snapshot it into the other frame so
+         * arbitrary partial invalidations retain all unchanged pixels. */
+        panel_drawing = panel_latest == panel_pixels ? panel_back_pixels : panel_pixels;
+        configASSERT(panel_drawing != panel_latest);
+        watch_gpu_copy_frame(panel_drawing, panel_latest, display_width, display_height);
+    }
     uint32_t convert_start = watch_profile_start();
-    watch_bgra8888_rect_to_rgb565(
-        &panel_pixels[(size_t)area->y1 * display_width + area->x1],
+    watch_gpu_convert_rect(
+        &panel_drawing[(size_t)area->y1 * display_width + area->x1],
         display_width, px_map, width, height);
     WATCH_PROFILE_ADD(convert_cycles, convert_start);
     watch_dirty_rows_include(&dirty_rows, (unsigned)area->y1, (unsigned)area->y2);
@@ -147,6 +166,7 @@ void disp_flush(lv_disp_drv_t* display, const lv_area_t* area, lv_color_t * px_m
 
     /* Submit exactly once for all stripes and all invalid areas in this refresh.
      * The untouched parts of a partial refresh retain their previous pixels. */
+    wait_panel_idle();
     while (xSemaphoreTake(panel_dma_complete, 0) == pdTRUE) {}
     configASSERT(dirty_rows.valid);
     /* A full-width row range is contiguous in the persistent frame. Keep
@@ -159,15 +179,18 @@ void disp_flush(lv_disp_drv_t* display, const lv_area_t* area, lv_color_t * px_m
     __DSB();
     am_hal_daxi_control(AM_HAL_DAXI_CONTROL_FLUSH, NULL);
     display_update_area(&panel_area,
-        (uint8_t *)&panel_pixels[dirty_rows.first * display_width], disp_flush_done);
+        (uint8_t *)&panel_drawing[dirty_rows.first * display_width], disp_flush_done);
+    panel_latest = panel_drawing;
     dirty_rows.valid = false;
+    /* GPU conversion is complete. MSPI owns panel_latest, not the small LVGL
+     * draw buffer; allow the next refresh to render into the other frame. */
+    lv_disp_flush_ready(display);
 }
 
 void disp_flush_done(void *context) {
     (void)context;
     BaseType_t higher_priority_task_woken = pdFALSE;
     ++watch_gpu_stats.panel_frames;
-    lv_disp_flush_ready(&disp_drv);
     xSemaphoreGiveFromISR(panel_dma_complete, &higher_priority_task_woken);
     portYIELD_FROM_ISR(higher_priority_task_woken);
 }

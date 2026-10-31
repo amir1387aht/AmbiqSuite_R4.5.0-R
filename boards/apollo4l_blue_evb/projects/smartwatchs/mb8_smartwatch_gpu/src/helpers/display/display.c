@@ -7,6 +7,10 @@ __attribute__((section(".display_buffer"), aligned(32)))
 lv_color_t display_buffer2[DRAW_BUF_SIZE];
 
 #define XFER_MAX_WAIT_MS 100
+#if WATCH_GPU_PROFILE
+static volatile uint32_t panel_queued_at;
+static volatile uint32_t panel_dma_started_at;
+#endif
 
 static bool bXferDone = false;
 static uint32_t g_dataSize = 0;
@@ -296,6 +300,9 @@ bool display_is_busy() {
 }
 
 static void display_transfer_complete(void* pCallbackCtxt, uint32_t transactionStatus) {
+#if WATCH_GPU_PROFILE
+    WATCH_PROFILE_ADD(panel_dma_cycles, panel_dma_started_at);
+#endif
 	sDispTransfer.bXferBusy = false;
 
 	if (sDispTransfer.fnXferDoneCb) {
@@ -330,6 +337,10 @@ static void am_devices_display_te_handler(void* pvUnused) {
 	// Transfer the frame when TE interrupt arrives.
 	//
 	if (sDispTransfer.bXferPending) {
+#if WATCH_GPU_PROFILE
+        WATCH_PROFILE_ADD(te_wait_cycles, panel_queued_at);
+        panel_dma_started_at = watch_profile_start();
+#endif
 		am_devices_display_launch_transfer();
 		sDispTransfer.bXferPending = false;
 	}
@@ -773,6 +784,9 @@ void display_pins_enable(bool state) {
 }
 
 static uint32_t am_devices_display_transfer_frame_inter(void) {
+#if WATCH_GPU_PROFILE
+    panel_queued_at = watch_profile_start();
+#endif
 	sDispTransfer.bXferPending = true;
 	return AM_DEVICES_DISPLAY_STATUS_SUCCESS;
 }

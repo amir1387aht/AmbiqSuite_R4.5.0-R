@@ -8,7 +8,18 @@ count = 0
 for folder in ['src/screens/menu', 'src/sensors/accl']:
     for f in (O/folder).rglob('*'):
         if f.is_file() and f.suffix in ['.c', '.h']:
-            assert f.read_bytes() == (P/f.relative_to(O)).read_bytes(), f
+            actual = (P/f.relative_to(O)).read_text(encoding='utf-8-sig')
+            expected = f.read_text(encoding='utf-8-sig')
+            if f.name == 'accl_sensor.c':
+                stop = """    /* Disabled at the user's request during display FPS measurements.
+     * A FreeRTOS task must delete itself instead of returning to port.c. */
+    vTaskDelete(NULL);
+    return;
+
+"""
+                assert stop in actual
+                actual = actual.replace(stop, '', 1)
+            assert expected == actual, f
             count += 1
 assert (P/'src/main.c').read_bytes() == (O/'src/main.c').read_bytes()
 def defines(s):
@@ -29,4 +40,4 @@ for folder in ['src', 'libs/gpu_port', 'gcc']:
     for f in (P/folder).rglob('*'):
         if f.is_file() and (f.suffix in ['.c', '.h', '.bat'] or f.name == 'Makefile'):
             assert 'smoke' not in f.read_text().lower(), f
-print(f'PASS: original app/menu, {count} menu/accelerometer source files, all original font options, bottom-middle FPS/CPU monitor and logging settings preserved')
+print(f'PASS: original app/menu, {count} menu/accelerometer sources (requested safe task stop only), all original font options, bottom-middle FPS/CPU monitor and logging settings preserved')

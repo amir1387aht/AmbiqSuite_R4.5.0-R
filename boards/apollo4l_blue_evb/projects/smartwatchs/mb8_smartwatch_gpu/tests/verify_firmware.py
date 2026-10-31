@@ -20,6 +20,11 @@ for mode in [sys.argv[1] if len(sys.argv) > 1 else 'bin']:
  assert 'watch_gpu_glyph_bitmap' in symbols
  assert 'watch_gpu_note_completed' in symbols
  assert 'glyph_cache' in symbols
+ assert 'watch_gpu_convert_rect' in symbols and 'watch_gpu_copy_frame' in symbols
+ assert b'Panel pipeline: double RGB565 frames, render/DMA overlap.' in data
+ assert b'Accel [g]:' not in data, 'Requested accelerometer stream was not eliminated'
+ assert (b'GPU conversion: Nema BGRA8888 -> RGB565 enabled.' in data or
+         b'GPU conversion disabled: CPU reference path.' in data)
  assert not any(name.startswith(('watch_gpu_' + 'smoke', 'watch_gpu_submissions', 'watch_gpu_completed_waits', 'watch_panel_flushes')) for name in symbols)
  assert 0x10060000<=sp<0x100e0000 and sp%8==0
  assert reset&1 and (reset&~1)==symbols['Reset_Handler']
