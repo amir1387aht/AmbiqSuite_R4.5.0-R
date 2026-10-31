@@ -3,13 +3,13 @@
 #define RTOS_H
 
 #include "am_util.h"
-#include "helpers/display/lvgl_display.h"
-#include "helpers/utils/utils.h"
+#include "drivers/display/lvgl_display.h"
+#include "drivers/utils/utils.h"
 #include "sensors/light/light_sensor.h"
 #include "sensors/accl/accl_sensor.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "helpers/wdt/wdt.h"
+#include "drivers/wdt/wdt.h"
 
 #ifdef __cplusplus
 extern "C" {

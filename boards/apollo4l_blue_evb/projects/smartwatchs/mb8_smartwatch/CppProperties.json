@@ -1,31 +1,17 @@
 {
   "configurations": [
     {
-      "inheritEnvironments": [
-        "msvc_x64"
-      ],
-      "name": "x64-Debug",
+      "name": "mb8_smartwatch",
       "includePath": [
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\utils",
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\third_party",
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\third_party\\FreeRTOSv10.5.1\\Source\\include",
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\third_party\\FreeRTOSv10.5.1\\Source\\portable\\GCC\\ARM_CM4F",
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\devices",
-        "${workspaceRoot}\\..\\..\\..\\bsp",
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\mcu\\apollo4l",
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\mcu\\apollo4l\\hal",
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\mcu\\apollo4l\\regs",
-        "${workspaceRoot}\\..\\..\\..\\..\\..\\mcu\\apollo4l\\hal\\mcu",
-        "${env.INCLUDE}",
-        "${workspaceRoot}\\**"
+        "${workspaceRoot}/src/**",
+        "${workspaceRoot}/libs/gpu_port",
+        "${workspaceRoot}/../../../../../../third_party/LVGL/lvgl",
+        "${workspaceRoot}/../../../../../../third_party/LVGL/ambiq_support"
       ],
       "defines": [
-        "WIN32",
-        "_DEBUG",
-        "UNICODE",
-        "_UNICODE"
-      ],
-      "intelliSenseMode": "windows-msvc-x64"
+        "AM_PART_APOLLO4L",
+        "LV_CONF_INCLUDE_SIMPLE"
+      ]
     }
   ]
 }

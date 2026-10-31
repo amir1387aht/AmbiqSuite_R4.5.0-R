@@ -13,7 +13,7 @@ extern "C" {
  *      INCLUDES
  *********************/
 #include "lvgl.h"
-#include "helpers/vibrator/vibrator.h"
+#include "drivers/vibrator/vibrator.h"
 
 /*********************
  *      DEFINES

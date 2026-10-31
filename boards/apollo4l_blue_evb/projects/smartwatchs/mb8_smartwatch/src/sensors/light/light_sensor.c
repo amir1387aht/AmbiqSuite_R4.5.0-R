@@ -105,7 +105,7 @@ void lightSens_task(void* pvParameters) {
                 }
 
                 // Apply the new brightness
-                display_set_brightness(current_brightness);
+                display_request_brightness(current_brightness);
 
                 // Short delay for transition updates
                 vTaskDelayUntil(&transitionWakeTime, xShortDelay);
@@ -114,7 +114,7 @@ void lightSens_task(void* pvParameters) {
         else if (current_brightness != target) {
             // For very small changes, update immediately
             current_brightness = target;
-            display_set_brightness(current_brightness);
+            display_request_brightness(current_brightness);
         }
 
         // Reset wake time for the long delay cycle

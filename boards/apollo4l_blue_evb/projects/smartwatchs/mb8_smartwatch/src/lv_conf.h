@@ -1,6 +1,6 @@
 /**
  * @file lv_conf.h
- * Configuration file for v8.4.0
+ * Application settings adapted to the SDK Ambiq LVGL v8.1.0 fork
  */
 
 /*
@@ -24,7 +24,7 @@
  *====================*/
 
 /*Color depth: 1 (1 byte per pixel), 8 (RGB332), 16 (RGB565), 32 (ARGB8888)*/
-#define LV_COLOR_DEPTH 16
+#define LV_COLOR_DEPTH 32
 
 /*Swap the 2 bytes of RGB565 color. Useful if the display has an 8-bit interface (e.g. SPI)*/
 #define LV_COLOR_16_SWAP 0
@@ -47,24 +47,22 @@
 
 /*1: use custom malloc/free, 0: use the built-in `lv_mem_alloc()` and `lv_mem_free()`*/
 #define LV_MEM_CUSTOM 0
-#if LV_MEM_CUSTOM == 0
-    /*Size of the memory available for `lv_mem_alloc()` in bytes (>= 2kB)*/
-    #define LV_MEM_SIZE (256U * 1024U)          /*[bytes]*/
+/* These pools are exclusively reserved in gcc/linker_script.ld. */
+#define LV_MEM_TCM_ADR 0x10040000UL
+#define LV_MEM_TCM_SIZE (128UL * 1024UL)
+#define LV_MEM_SSRAM_ADR 0x100e0000UL
+#define LV_MEM_SSRAM_SIZE (512UL * 1024UL)
+/* No PSRAM is initialized on this watch. Project-local lv_mem.c redirects
+ * external allocation requests to the existing SSRAM pool. */
+#define LV_MEM_PSRAM_ADR 0
+#define LV_MEM_PSRAM_SIZE 0
+#define LV_USE_GPU_AMBIQ_NEMA 1
+#define LV_AMBIQ_FONT_REALIGN_BITMAP 0
+#define LV_USE_AMBIQ_PERF_MONITOR_REFINED 0
+#define LV_AMBIQ_NEMA_IMAGE_SYNC 1
+#define LV_AMBIQ_FB_RESX 192
+#define LV_AMBIQ_FB_RESY 490
 
-    /*Set an address for the memory pool instead of allocating it as a normal array. Can be in external SRAM too.*/
-    #define LV_MEM_ADR 0     /*0: unused*/
-    /*Instead of an address give a memory allocator that will be called to get a memory pool for LVGL. E.g. my_malloc*/
-    #if LV_MEM_ADR == 0
-        #undef LV_MEM_POOL_INCLUDE
-        #undef LV_MEM_POOL_ALLOC
-    #endif
-
-#else       /*LV_MEM_CUSTOM*/
-    #define LV_MEM_CUSTOM_INCLUDE <stdlib.h>   /*Header for the dynamic memory function*/
-    #define LV_MEM_CUSTOM_ALLOC   malloc
-    #define LV_MEM_CUSTOM_FREE    free
-    #define LV_MEM_CUSTOM_REALLOC realloc
-#endif     /*LV_MEM_CUSTOM*/
 
 /*Number of the intermediate memory buffer used during rendering and other internal processing mechanisms.
  *You will see an error log message if there wasn't enough buffers. */
@@ -87,8 +85,8 @@
  *It removes the need to manually update the tick with `lv_tick_inc()`)*/
 #define LV_TICK_CUSTOM 1
 #if LV_TICK_CUSTOM
-    #define LV_TICK_CUSTOM_INCLUDE "helpers/rtc/rtc.h"         /*Header for the system time function*/
-    #define LV_TICK_CUSTOM_SYS_TIME_EXPR (rtc_get_system_time_ms())    /*Expression evaluating to current system time in ms*/
+    #define LV_TICK_CUSTOM_INCLUDE "watch_tick.h"         /*Header for the system time function*/
+    #define LV_TICK_CUSTOM_SYS_TIME_EXPR (watch_tick_ms())    /*Expression evaluating to current system time in ms*/
 #endif   /*LV_TICK_CUSTOM*/
 
 /*Default Dot Per Inch. Used to initialize default sizes such as widgets sized, style paddings.
@@ -338,7 +336,6 @@
 
 /*Attribute to mark large constant arrays for example font's bitmaps*/
 #define LV_ATTRIBUTE_LARGE_CONST
-
 /*Compiler prefix for a big array declaration in RAM*/
 #define LV_ATTRIBUTE_LARGE_RAM_ARRAY
 

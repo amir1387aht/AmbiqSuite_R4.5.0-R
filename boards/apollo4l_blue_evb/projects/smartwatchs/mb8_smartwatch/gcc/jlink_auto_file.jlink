@@ -1,3 +1,7 @@
 connect
-loadfile "./bin/mb8_smartwatch.bin", 0x18000, reset
+r
+h
+loadfile "./bin/mb8_smartwatch.bin", 0x00018000
+r
+g
 exit

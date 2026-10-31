@@ -1,7 +1,0 @@
-connect
-r
-h
-loadfile "./bin/mb8_smartwatch_gpu.bin", 0x00018000
-r
-g
-exit

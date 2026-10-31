@@ -4,7 +4,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "portmacro.h"
-#include "helpers/display/display.h"
+#include "drivers/display/display.h"
 #include "../gpio/gpio.h"
 
 #define OUTPUT_MIN 20       // Minimum brightness value

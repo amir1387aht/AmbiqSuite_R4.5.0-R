@@ -8,18 +8,19 @@ TaskHandle_t xAcclSensTask;
 
 void run_tasks(void)
 {
-    xTaskCreate(mcu_init, "Setup Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_SUPER_HIGH, &xSetupTask);
-    xTaskCreate(wdt_init, "WDT Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_SUPER_HIGH, &xWDTTask);
+    configASSERT(xTaskCreate(mcu_init, "Setup Task", 2048, 0, TASK_PRIORITY_SUPER_HIGH, &xSetupTask) == pdPASS);
+    configASSERT(xTaskCreate(wdt_init, "WDT Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_SUPER_HIGH, &xWDTTask) == pdPASS);
     // TODO: Create ble task with TASK_PRIORITY_HIGH priority
-    xTaskCreate(lvgl_display_init, "Lvgl Task", 4096, 0, TASK_PRIORITY_MEDIUM, &xLvglTask);
-    xTaskCreate(lightSens_task, "LightSensor Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_IDLE, &xLightSensTask);
-    xTaskCreate(acclSens_task, "AcclSensor Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_IDLE, &xAcclSensTask);
+    configASSERT(xTaskCreate(lvgl_display_init, "Lvgl Task", 4096, 0, TASK_PRIORITY_MEDIUM, &xLvglTask) == pdPASS);
+    configASSERT(xTaskCreate(lightSens_task, "LightSensor Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_IDLE, &xLightSensTask) == pdPASS);
+    configASSERT(xTaskCreate(acclSens_task, "AcclSensor Task", configMINIMAL_STACK_SIZE, 0, TASK_PRIORITY_IDLE, &xAcclSensTask) == pdPASS);
     vTaskStartScheduler();
 }
 
 uint32_t am_freertos_sleep(uint32_t idleTime)
 {
-    am_hal_sysctrl_sleep(AM_HAL_SYSCTRL_SLEEP_DEEP);
+    /* Bring-up policy: retain GPU/AXI power while the GPU or MSPI can be active. */
+    am_hal_sysctrl_sleep(AM_HAL_SYSCTRL_SLEEP_NORMAL);
     return 0;
 }
 

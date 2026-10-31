@@ -1,206 +1,97 @@
-﻿PLATFORM := WINDOWS
+# Apollo4 Blue Lite / Mi Band 8: SDK-matched LVGL 8.1 + NemaP GPU.
+.DEFAULT_GOAL := all
+ROOT_DIR := ../../../../../..
 TARGET := mb8_smartwatch
-COMPILERNAME := gcc
-PROJECT := mb8_smartwatch_gcc
-CONFIG := bin
-
-JOBS := 16
-
+CONFIG ?= bin
+TOOLCHAIN ?= arm-none-eabi
+CC := $(TOOLCHAIN)-gcc
+OBJCOPY := $(TOOLCHAIN)-objcopy
+SIZE := $(TOOLCHAIN)-size
+JOBS ?= 8
+GPU_PROFILE ?= 0
+GPU_CONVERT ?= 1
 SHELL := /bin/bash
 
-# Enable printing explicit commands with 'make VERBOSE=1'
-ifneq ($(VERBOSE),1)
-Q := @
-endif
+LVGL_DIR := $(ROOT_DIR)/third_party/LVGL/lvgl
+AMBIQ_DIR := $(ROOT_DIR)/third_party/LVGL/ambiq_support
+NEMA_DIR := $(ROOT_DIR)/third_party/ThinkSi
+NEMA_PLATFORM_DIR := $(NEMA_DIR)/config/apollo4l_nemagfx
 
-#### Setup ####
-
-TOOLCHAIN ?= arm-none-eabi
-PART = apollo4l
-CPU = cortex-m4
-FPU = fpv4-sp-d16
-# FABI = softfp
-FABI = hard
-
-LINKER_FILE := ./linker_script.ld
-STARTUP_FILE := ./startup_$(COMPILERNAME).c
-
-#### Required Executables ####
-CC = $(TOOLCHAIN)-gcc
-GCC = $(TOOLCHAIN)-gcc
-CPP = $(TOOLCHAIN)-cpp
-LD = $(TOOLCHAIN)-ld
-CP = $(TOOLCHAIN)-objcopy
-OD = $(TOOLCHAIN)-objdump
-RD = $(TOOLCHAIN)-readelf
-AR = $(TOOLCHAIN)-ar
-SIZE = $(TOOLCHAIN)-size
-RM = $(shell which rm 2>/dev/null)
-MKDIR_P = mkdir -p
-
-EXECUTABLES = CC LD CP OD AR RD SIZE GCC
-K := $(foreach exec,$(EXECUTABLES),\
-        $(if $(shell which $($(exec)) 2>/dev/null),,\
-        $(info $(exec) not found on PATH ($($(exec))).)$(exec)))
-$(if $(strip $(value K)),$(info Required Program(s) $(strip $(value K)) not found))
-
-ifneq ($(strip $(value K)),)
-all clean:
-	$(info Tools $(TOOLCHAIN)-$(COMPILERNAME) not installed.)
-	$(RM) -rf bin
+# Full paths preserve source identity; never compile the copied 8.4 tree.
+# Enumerate with GNU make, not shell find: Windows find.exe and shell quoting
+# can silently return an empty list, dropping main(), RTOS hooks and LVGL.
+source_dirs = $(1) $(foreach d,$(wildcard $(1)/*/),$(call source_dirs,$(patsubst %/,%,$(d))))
+APP_DIRS := $(call source_dirs,../src)
+LVGL_DIRS := $(call source_dirs,$(LVGL_DIR)/src)
+APP_SRC := $(sort $(foreach d,$(APP_DIRS),$(wildcard $(d)/*.c)))
+LVGL_SRC := $(sort $(foreach d,$(LVGL_DIRS),$(wildcard $(d)/*.c)))
+ifeq ($(filter ../src/main.c ../src/rtos.c,$(APP_SRC)),../src/main.c ../src/rtos.c)
 else
-
-#### Flags and Directories ####
-
-DEFINES = -DPART_$(PART)
-DEFINES += -DAM_PART_APOLLO4L
-DEFINES += -DAM_PACKAGE_BGA
-DEFINES += -Dgcc
-
-ROOT_DIR := ../../../../../..
-INCLUDES = -I$(ROOT_DIR)
-INCLUDES += -I$(ROOT_DIR)/CMSIS/AmbiqMicro/Include
-INCLUDES += -I../../../../bsp
-INCLUDES += -I$(ROOT_DIR)/CMSIS/ARM/Include
-INCLUDES += -I$(ROOT_DIR)/devices
-INCLUDES += -I$(ROOT_DIR)/utils
-INCLUDES += -I$(ROOT_DIR)/mcu/apollo4l
-INCLUDES += -I$(ROOT_DIR)/mcu/apollo4l/hal/mcu
-INCLUDES += -I$(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source/include
-INCLUDES += -I$(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source/portable/GCC/AMapollo4
-
-SRC_DIR := ../src
-LIBS_DIR := ../libs
-
-rwildcard = $(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2) $(filter $(subst *,%,$2),$d))
-
-HDR_DIRS := $(sort $(dir $(call rwildcard,$(SRC_DIR)/,*.h) $(call rwildcard,$(LIBS_DIR)/,*.h)))
-INCLUDES += $(addprefix -I,$(HDR_DIRS))
-
-VPATH := $(SRC_DIR):$(LIBS_DIR):$(ROOT_DIR)/utils
-VPATH += :$(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source
-VPATH += :$(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source/portable/GCC/AMapollo4
-VPATH += :$(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source/portable/MemMang
-
-SRC_FILES := $(call rwildcard,$(SRC_DIR)/,*.c)
-LIBS_FILES := $(call rwildcard,$(LIBS_DIR)/,*.c)
-
-UTIL_SRC := am_util_delay.c am_util_faultisr.c am_util_id.c am_util_stdio.c am_util_string.c am_util_time.c
-SRC_FLAT := $(UTIL_SRC) startup_gcc.c
-
-FREERTOS_SRC := port.c queue.c tasks.c timers.c heap_4.c list.c
-SRC_FLAT += $(FREERTOS_SRC)
-
-SRC_OBJS := $(patsubst $(SRC_DIR)/%.c,$(CONFIG)/src/%.o,$(SRC_FILES))
-LIBS_OBJS := $(patsubst $(LIBS_DIR)/%.c,$(CONFIG)/libs/%.o,$(LIBS_FILES))
-FLAT_OBJS := $(patsubst %.c,$(CONFIG)/%.o,$(SRC_FLAT))
-
-OBJS := $(SRC_OBJS) $(LIBS_OBJS) $(FLAT_OBJS)
-
-DEPS := $(OBJS:.o=.d)
-
-CFLAGS = -mthumb -mcpu=$(CPU) -mfpu=$(FPU) -mfloat-abi=$(FABI)
-CFLAGS += -ffunction-sections -fdata-sections -fomit-frame-pointer
-CFLAGS += -MMD -MP -std=c2x -Wall -g
-CFLAGS += -O2
-CFLAGS += $(DEFINES)
-CFLAGS += $(INCLUDES)
-
-LFLAGS = -mthumb -mcpu=$(CPU) -mfpu=$(FPU) -mfloat-abi=$(FABI)
-LFLAGS += -nostartfiles -static
-LFLAGS += -Wl,--gc-sections,--entry,Reset_Handler,-Map,$(CONFIG)/$(TARGET).map
-LFLAGS += -Wl,--start-group -lm -lc -lgcc -lnosys $(LIBS) -Wl,--end-group
-
-CPFLAGS = -Obinary
-ODFLAGS = -S
-
-DEPS = $(CSRC:%.c=$(CONFIG)/%.d)
-DEPS += $(ASRC:%.s=$(CONFIG)/%.d)
-
-LIBS = $(ROOT_DIR)/mcu/apollo4l/hal/mcu/gcc/bin/libam_hal.a
-LIBS += ../../../../bsp/gcc/bin/libam_bsp.a
-
-DEPENDENCY_FILE := $(CONFIG)/.build_deps
-
-MAKEFLAGS += -j$(JOBS)
-
-.SECONDEXPANSION:
-.PRECIOUS: $(CONFIG)/%.o
-
-all: directories $(CONFIG)/$(TARGET).bin
-	@echo "Build complete using $(JOBS) parallel jobs"
-
-directories:
-	@echo "Creating output directories..."
-	$(Q) $(MKDIR_P) $(CONFIG)
-	$(Q) for dir in $(sort $(dir $(OBJS))); do \
-		$(MKDIR_P) $$dir; \
-	done
-	$(Q) touch $(DEPENDENCY_FILE)
-
-$(CONFIG)/src/%.o: $(SRC_DIR)/%.c
-	@echo "Compiling $<"
-	$(Q) $(MKDIR_P) $(dir $@)
-	$(Q) $(CC) -c $(CFLAGS) $< -o $@
-	@echo "$@: $<" >> $(DEPENDENCY_FILE)
-
-$(CONFIG)/libs/%.o: $(LIBS_DIR)/%.c
-	@echo "Compiling $<"
-	$(Q) $(MKDIR_P) $(dir $@)
-	$(Q) $(CC) -c $(CFLAGS) $< -o $@
-	@echo "$@: $<" >> $(DEPENDENCY_FILE)
-
-$(CONFIG)/%.o: %.c
-	@echo "Compiling $<"
-	$(Q) $(CC) -c $(CFLAGS) $< -o $@
-	@echo "$@: $<" >> $(DEPENDENCY_FILE)
-
-$(CONFIG)/%.o: %.s
-	@echo "Assembling $<"
-	$(Q) $(CC) -c $(CFLAGS) $< -o $@
-	@echo "$@: $<" >> $(DEPENDENCY_FILE)
-
-$(CONFIG)/$(TARGET).axf: $(OBJS) $(LIBS)
-	@echo "Linking $(CONFIG)/$(TARGET).axf"
-	$(Q) $(CC) -Wl,-T,$(LINKER_FILE) -o $(CONFIG)/$(TARGET).axf $(OBJS) $(LFLAGS)
-
-$(CONFIG)/$(TARGET).bin: $(CONFIG)/$(TARGET).axf
-	@echo "Copying binary to $(CONFIG)/$(TARGET).bin"
-	$(Q) $(CP) $(CPFLAGS) $(CONFIG)/$(TARGET).axf $(CONFIG)/$(TARGET).bin
-	$(Q) $(OD) $(ODFLAGS) $(CONFIG)/$(TARGET).axf > $(CONFIG)/$(TARGET).lst
-	$(Q) $(SIZE) $(CONFIG)/$(TARGET).axf > $(CONFIG)/$(TARGET).size
-	$(Q) $(SIZE) $(CONFIG)/$(TARGET).axf
-
-$(ROOT_DIR)/mcu/apollo4l/hal/mcu/gcc/bin/libam_hal.a:
-	@echo "Building HAL library..."
-	$(Q) $(MAKE) -C $(ROOT_DIR)/mcu/apollo4l/hal/mcu
-
-../../../../bsp/gcc/bin/libam_bsp.a:
-	@echo "Building BSP library..."
-	$(Q) $(MAKE) -C ../../../../bsp
-
-clean:
-	@echo "Cleaning..."
-	$(Q) [ -d $(CONFIG) ] && rm -rf $(CONFIG) || true
-
--include $(DEPS)
--include $(DEPENDENCY_FILE)
-
-print-debug:
-	@echo "Source files from SRC_DIR:"
-	@echo $(SRC_FILES)
-	@echo "Source files from LIBS_DIR:"
-	@echo $(LIBS_FILES)
-	@echo "FreeRTOS source files:"
-	@echo $(FREERTOS_SRC)
-	@echo "Flat source files:"
-	@echo $(SRC_FLAT)
-	@echo "Object files:"
-	@echo $(OBJS)
-	@echo "Include directories:"
-	@echo $(INCLUDES)
-
+$(error Application source discovery failed: expected ../src/main.c and ../src/rtos.c. Build from this project's gcc directory)
 endif
+ifeq ($(filter $(LVGL_DIR)/src/core/lv_obj.c,$(LVGL_SRC)),)
+$(error SDK LVGL source discovery failed: expected $(LVGL_DIR)/src/core/lv_obj.c)
+endif
+# These project-local copies only change no-PSRAM allocation and font fallback.
+LVGL_SRC := $(filter-out $(LVGL_DIR)/src/misc/lv_mem.c $(LVGL_DIR)/src/misc/lv_tlsf.c $(LVGL_DIR)/src/gpu/lv_gpu_ambiq_nema.c,$(LVGL_SRC))
+FONT_OVERRIDES := $(notdir $(wildcard ../libs/gpu_port/lv_font_montserrat_*.c))
+LVGL_SRC := $(filter-out $(addprefix $(LVGL_DIR)/src/font/,$(FONT_OVERRIDES)),$(LVGL_SRC))
+PORT_SRC := $(wildcard ../libs/gpu_port/*.c)
+AMBIQ_SRC := $(addprefix $(AMBIQ_DIR)/,lv_ambiq_nema_hal.c lv_ambiq_misc.c lv_ambiq_font_align.c lv_ambiq_decoder.c)
+# The local watch_nema_hal.c fixes the SDK binary-semaphore ISR exit.
+NEMA_SRC := $(addprefix $(NEMA_PLATFORM_DIR)/,nema_event.c nema_utils.c)
+UTIL_SRC := $(addprefix $(ROOT_DIR)/utils/,am_util_delay.c am_util_faultisr.c am_util_id.c am_util_stdio.c am_util_string.c am_util_time.c)
+FREERTOS_DIR := $(ROOT_DIR)/third_party/FreeRTOSv10.5.1/Source
+RTOS_SRC := $(addprefix $(FREERTOS_DIR)/,queue.c tasks.c timers.c list.c event_groups.c)
+RTOS_SRC += $(FREERTOS_DIR)/portable/GCC/AMapollo4/port.c $(FREERTOS_DIR)/portable/MemMang/heap_4.c
+SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(AMBIQ_SRC) $(NEMA_SRC) $(UTIL_SRC) $(RTOS_SRC) startup_gcc.c
+# Strip leading ../ segments rather than allowing paths to escape CONFIG.
+obj = $(CONFIG)/obj/$(subst ../,,$(1:.c=.o))
+OBJS := $(foreach s,$(SRC),$(call obj,$(s)))
 
-.PHONY: all clean directories print-debug syscalls
-.SUFFIXES:
+INCLUDE_DIRS := ../src ../libs/gpu_port $(ROOT_DIR) $(ROOT_DIR)/CMSIS/AmbiqMicro/Include $(ROOT_DIR)/CMSIS/ARM/Include ../../../../bsp $(ROOT_DIR)/devices $(ROOT_DIR)/utils $(ROOT_DIR)/mcu/apollo4l $(ROOT_DIR)/mcu/apollo4l/hal $(ROOT_DIR)/mcu/apollo4l/hal/mcu $(FREERTOS_DIR)/include $(FREERTOS_DIR)/portable/GCC/AMapollo4
+INCLUDE_DIRS += $(LVGL_DIR) $(LVGL_DIR)/src $(LVGL_DIR)/src/misc $(LVGL_DIR)/src/gpu $(AMBIQ_DIR)
+INCLUDE_DIRS += $(NEMA_DIR)/NemaGFX_SDK/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/common/mem $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaDC $(NEMA_DIR)/NemaGFX_SDK/include/tsi/common $(NEMA_PLATFORM_DIR)
+INCLUDE_DIRS += $(APP_DIRS)
+CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
+CPPFLAGS += -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_CONVERT=$(GPU_CONVERT) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
+ARCH := -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+CFLAGS := $(ARCH) -std=gnu11 -O2 -g3 -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -MMD -MP
+LDFLAGS := $(ARCH) -nostartfiles -static -Tlinker_script.ld -Wl,--gc-sections,--entry,Reset_Handler,-Map,$(CONFIG)/$(TARGET).map,--print-memory-usage
+HAL_LIB := $(ROOT_DIR)/mcu/apollo4l/hal/mcu/gcc/bin/libam_hal.a
+BSP_LIB := ../../../../bsp/gcc/bin/libam_bsp.a
+GPU_LIB ?= $(AMBIQ_DIR)/gpu_lib_apollo4/gcc/bin/lvgl_ambiq_porting.a
+NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
+
+.PHONY: all objects clean check-libs FORCE
+FORCE:
+$(CONFIG)/.compiler-flags: FORCE
+	@mkdir -p $(CONFIG)
+	@printf '%s\n' 'GPU_PROFILE=$(GPU_PROFILE) GPU_CONVERT=$(GPU_CONVERT) TOOLCHAIN=$(TOOLCHAIN) CFLAGS=$(CFLAGS)' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+
+
+all: $(CONFIG)/$(TARGET).bin
+objects: $(OBJS)
+check-libs:
+	@missing=0; for lib in "$(GPU_LIB)" "$(NEMA_LIB)"; do if [ ! -f "$$lib" ]; then echo "Missing vendor GPU library: $$lib" >&2; missing=1; fi; done; [ $$missing -eq 0 ] || { echo "Restore these from the licensed AmbiqSuite R4.5.0 package. No stubs are used." >&2; exit 1; }
+
+define compile_rule
+$(call obj,$(1)): $(1) Makefile $(CONFIG)/.compiler-flags
+	@mkdir -p $$(@D)
+	$$(CC) $$(CPPFLAGS) $$(CFLAGS) -c $$< -o $$@
+endef
+$(foreach s,$(SRC),$(eval $(call compile_rule,$(s))))
+
+$(HAL_LIB):
+	$(MAKE) -C $(ROOT_DIR)/mcu/apollo4l/hal/mcu/gcc -j$(JOBS)
+$(BSP_LIB):
+	$(MAKE) -C ../../../../bsp/gcc -j$(JOBS)
+$(CONFIG)/$(TARGET).axf: $(OBJS) $(HAL_LIB) $(BSP_LIB) | check-libs
+	$(CC) $(LDFLAGS) -o $@ $(OBJS) -Wl,--start-group $(GPU_LIB) $(NEMA_LIB) $(HAL_LIB) $(BSP_LIB) -lm -lc -lgcc -lnosys -Wl,--end-group
+	$(SIZE) $@
+$(CONFIG)/$(TARGET).bin: $(CONFIG)/$(TARGET).axf
+	$(OBJCOPY) -O binary $< $@
+clean:
+	rm -rf $(CONFIG)
+-include $(OBJS:.o=.d)

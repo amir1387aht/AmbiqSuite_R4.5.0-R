@@ -115,6 +115,11 @@ void acclSens_init()
 
 // Function to read accelerometer and gyroscope data
 void acclSens_task(void* pvParameters) {
+    /* Disabled at the user's request during display FPS measurements.
+     * A FreeRTOS task must delete itself instead of returning to port.c. */
+    vTaskDelete(NULL);
+    return;
+
     if (!IsAcclSensorInitSuccessfully) {
         vTaskDelete(NULL);
         return;

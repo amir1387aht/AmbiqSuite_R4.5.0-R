@@ -55,3 +55,5 @@ boards/apollo4p_evb_disp_shield_rev2/*
 boards/apollo4l_blue_evb/projects/smartwatchs/mb8_smartwatch/.vs/*
 boards/apollo4l_blue_evb/projects/smartwatchs/mb8_smartwatch/.vs_code/*
 boards/apollo4l_blue_evb/projects/smartwatchs/mb8_smartwatch/.idea/*
+
+boards/apollo4b_evb_disp_shield/*

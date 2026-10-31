@@ -5,7 +5,7 @@
 #include "task.h"
 #include "portmacro.h"
 #include "../gpio/gpio.h"
-#include "../../helpers/utils/utils.h"
+#include "../../drivers/utils/utils.h"
 #include <math.h>
 
 static bool IsAcclSensorInitSuccessfully = false;
