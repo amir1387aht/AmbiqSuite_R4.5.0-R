@@ -27,6 +27,9 @@ typedef struct {
     uint32_t panel_gap1;
     uint32_t panel_gap2;
     uint32_t panel_gap3p;
+    uint32_t native_fill_gpu;
+    uint32_t native_bg_gpu;
+    uint32_t native_cpu_fallbacks;
 } watch_gpu_stats_t;
 extern volatile watch_gpu_stats_t watch_gpu_stats;
 extern volatile bool watch_gpu_ready;

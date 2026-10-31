@@ -77,8 +77,8 @@ void watch_memory_report(void)
         UL(rtos.xSizeOfLargestFreeBlockInBytes), UL(rtos.xNumberOfFreeBlocks));
     am_util_stdio_printf("Reserved: C heap=%lu (live use unmeasured); main/IRQ stack=%lu; task stacks included in RTOS use\r\n",
         UL(SPAN(__heap_start__, __heap_end__)), UL(SPAN(__stack_start__, __stack_end__)));
-    am_util_stdio_printf("Display: LVGL 2 x %lu-byte BGRA8888 draw buffers (%u x %u each); RGB565 panel 2 x %lu bytes\r\n",
-        UL(sizeof(display_buffer1)), (unsigned)display_width, (unsigned)DRAW_BUF_LINES,
+    am_util_stdio_printf("Display: LVGL 2 x %lu-byte %s draw buffers (%u x %u each); RGB565 panel 2 x %lu bytes\r\n",
+        UL(sizeof(display_buffer1)), LV_COLOR_DEPTH == 16 ? "RGB565" : "BGRA8888", (unsigned)display_width, (unsigned)DRAW_BUF_LINES,
         UL((size_t)display_width * display_height * sizeof(uint16_t)));
     am_util_stdio_printf("  Static display section=%lu; second panel frame is inside Nema heap, not additional RAM\r\n",
         UL(SPAN(__display_buffers_start__, __display_buffers_end__)));

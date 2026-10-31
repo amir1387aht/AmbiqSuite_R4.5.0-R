@@ -1,0 +1,65 @@
+Native RGB565 experiment -- separate from main
+=============================================
+Default: GPU_NATIVE_565=1, GPU_CONVERT=1, GPU_PROFILE=0.
+
+Build/flash from gcc:
+  make clean
+  ./flash.bat GPU_NATIVE_565=1 GPU_PROFILE=1 GPU_CONVERT=1
+For smoothness without profiling UART output, use GPU_PROFILE=0.
+FPS/CPU overlay stays enabled in both modes. Its CPU number is LVGL handler
+wall-time occupancy, not a measurement of whole-MCU active CPU cycles.
+
+A/B control on this branch:
+  make clean
+  ./flash.bat GPU_NATIVE_565=0 GPU_PROFILE=1 GPU_CONVERT=1
+This selects the original BGRA8888 renderer and original image asset encoding.
+The source/ABI selection is stamped into build dependencies to avoid stale objects.
+
+What changes in native mode
+---------------------------
+- LVGL color depth is 16, RGB565, unswapped. The 32-bit LVGL renderer archive
+  lvgl_ambiq_porting.a is deliberately NOT linked, even if GPU_LIB is supplied.
+- watch_gpu_rgb565.c implements LVGL's GPU hooks using public NemaGFX APIs and
+  the real Apollo4l Nema library. No firmware stubs or fabricated GPU completions.
+- GPU coverage: solid/opacity fills, rounded backgrounds (including menu circles),
+  cached immutable A4 glyphs. Masks, image maps, borders, outlines, lines, polygons,
+  arcs, unusual blend modes and unsupported glyphs use synchronized LVGL CPU
+  fallbacks. Software primitives may themselves use accelerated fill operations.
+  This is not yet feature parity with the vendor 32-bit renderer.
+- The CPU records a reusable 16-KiB GPU command list, batching supported draws.
+  Commands complete before CPU fallback or flush; pointers are not reused in flight.
+- Image assets preserve the same RGB565 colors and alpha. The reference BGRA
+  bytes remain available at compile time; native mode uses RGB565+A8 bytes.
+- Two 192x64 RGB565 LVGL draw buffers total 49,152 bytes (formerly 98,304 BGRA).
+- Two full 192x490 RGB565 panel buffers remain: 376,320 bytes total. The shared
+  glyph arena remains 96 KiB. No external RAM, UI or font selection changes.
+- Native mode has NO BGRA render target and NO BGRA-to-RGB565 conversion pass.
+  It is NOT zero-copy: each small RGB565 draw region is copied into the next
+  panel frame. The existing full-frame snapshot, partial-dirty-row handling,
+  render/MSPI overlap and one TE-gated panel transfer per refresh are retained.
+- GPU_CONVERT is a legacy switch name: native mode uses it to choose GPU (1)
+  versus CPU (0) same-format staging/frame copies; GPU rendering stays enabled.
+- Startup RAM accounting reports actual draw-buffer format and reservations.
+
+Confirm the flashed build
+-------------------------
+Boot prints:
+  Native RGB565: LVGL16 -> Nema RGB565 -> RGB565 panel; no BGRA conversion.
+  Native RGB565 staging: GPU same-format copy; no conversion.
+The first completed GPU text batch also prints submitted and hardware CL IDs.
+With GPU_PROFILE=1, check native565=1, fill_gpu/bg_gpu, glyph_gpu/glyph_cpu,
+stage_ms, stage_gpu/stage_cpu, gpuwait_ms, dma_fps and gap1/gap2/gap3p.
+The staging counters describe copies, not color conversion in native mode.
+Compare sustained active scrolling, not idle frames or mixed idle/scroll windows.
+Keep input gesture, profiling, screen and scroll position comparable for A/B.
+
+Qualification limits
+--------------------
+Cross-compilation/linking and host tests are not physical GPU/panel tests.
+Host checks use production renderer/copy code and actual SDK headers with Nema
+command mocks; they do not emulate GPU rasterization. In particular, verify
+on-device glyph coverage/opacity, rounded-edge antialiasing, icon colors/alpha,
+partial redraws, sleep/wake and long scrolling before considering a merge.
+No 60-FPS, power reduction or real CPU-utilization result is claimed yet.
+Snapshot/custom framebuffer formats other than RGB565 are not supported here.
+No tests directory or extra Markdown files were added to the project.
