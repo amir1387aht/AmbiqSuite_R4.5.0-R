@@ -14,8 +14,14 @@ lv_obj_t * ui____initial_actions0;
 // IMAGES AND IMAGE SETS
 
 ///////////////////// TEST LVGL SETTINGS ////////////////////
-#if LV_COLOR_DEPTH != 32
-    #error "GPU sibling requires 32-bit LVGL and converted BGRA8888 assets"
+#if WATCH_NATIVE_RGB565
+    #if LV_COLOR_DEPTH != 16
+        #error "Native GPU experiment requires RGB565 assets and LVGL16"
+    #endif
+#else
+    #if LV_COLOR_DEPTH != 32
+        #error "Vendor reference requires BGRA8888 assets and LVGL32"
+    #endif
 #endif
 #if LV_COLOR_16_SWAP !=0
     #error "LV_COLOR_16_SWAP should be 0 to match SquareLine Studio's settings"

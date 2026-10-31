@@ -7,6 +7,15 @@
 #include "task.h"
 #include "watch_tick.h"
 #include "drivers/uart/uart_output.h"
+#if WATCH_NATIVE_RGB565
+#define TRANSFER_TIME "stage_ms"
+#define TRANSFER_GPU "stage_gpu"
+#define TRANSFER_CPU "stage_cpu"
+#else
+#define TRANSFER_TIME "convert_ms"
+#define TRANSFER_GPU "conv_gpu"
+#define TRANSFER_CPU "conv_cpu"
+#endif
 
 typedef struct {
     watch_gpu_stats_t current;
@@ -27,7 +36,7 @@ static void profile_output_task(void *argument)
 #define DELTA(field) ((uint32_t)(c->field - p->field))
 #define MS(field) ((unsigned long)(DELTA(field) / cycles_per_ms))
         int length = snprintf(line, sizeof(line),
-            "GPUprof dma_fps=%lu te_hz=%lu cl=%lu glyph_gpu=%lu glyph_cpu=%lu cache_new=%lu cache_hit=%lu handler_ms=%lu convert_ms=%lu gpuwait_ms=%lu panelwait_ms=%lu conv_gpu=%lu conv_cpu=%lu tewait_ms=%lu dma_ms=%lu framecopy_ms=%lu gap1=%lu gap2=%lu gap3p=%lu hw=%lu\r\n",
+            "GPUprof dma_fps=%lu te_hz=%lu cl=%lu glyph_gpu=%lu glyph_cpu=%lu cache_new=%lu cache_hit=%lu handler_ms=%lu " TRANSFER_TIME "=%lu gpuwait_ms=%lu panelwait_ms=%lu " TRANSFER_GPU "=%lu " TRANSFER_CPU "=%lu tewait_ms=%lu dma_ms=%lu framecopy_ms=%lu gap1=%lu gap2=%lu gap3p=%lu hw=%lu native565=%u fill_gpu=%lu bg_gpu=%lu cpu_fallback=%lu\r\n",
             (unsigned long)(DELTA(panel_frames) * 1000u / sample.elapsed_ms),
             (unsigned long)(DELTA(te_edges) * 1000u / sample.elapsed_ms),
             (unsigned long)DELTA(submitted_cl),
@@ -37,7 +46,9 @@ static void profile_output_task(void *argument)
             (unsigned long)DELTA(convert_gpu), (unsigned long)DELTA(convert_cpu),
             MS(te_wait_cycles), MS(panel_dma_cycles), MS(frame_copy_cycles),
             (unsigned long)DELTA(panel_gap1), (unsigned long)DELTA(panel_gap2),
-            (unsigned long)DELTA(panel_gap3p), (unsigned long)c->completed_hw_id);
+            (unsigned long)DELTA(panel_gap3p), (unsigned long)c->completed_hw_id, (unsigned)WATCH_NATIVE_RGB565,
+            (unsigned long)DELTA(native_fill_gpu), (unsigned long)DELTA(native_bg_gpu),
+            (unsigned long)DELTA(native_cpu_fallbacks));
 #undef MS
 #undef DELTA
         if (length > 0 && (size_t)length < sizeof(line))

@@ -27,10 +27,18 @@ void watch_gpu_convert_init(void)
         am_util_stdio_printf("GPU conversion unavailable (%lu); using CPU fallback.\r\n",
                              (unsigned long)error);
     } else {
+#if WATCH_NATIVE_RGB565
+        am_util_stdio_printf("Native RGB565 staging: GPU same-format copy; no conversion.\r\n");
+#else
         am_util_stdio_printf("GPU conversion: Nema BGRA8888 -> RGB565 enabled.\r\n");
+#endif
     }
 #else
+#if WATCH_NATIVE_RGB565
+    am_util_stdio_printf("Native RGB565 staging: CPU same-format copy; no conversion.\r\n");
+#else
     am_util_stdio_printf("GPU conversion disabled: CPU reference path.\r\n");
+#endif
 #endif
 }
 
@@ -91,12 +99,22 @@ void watch_gpu_convert_rect(uint16_t *dst, size_t dst_stride,
     configASSERT(dst && src && width && height && dst_stride >= width);
 #if WATCH_GPU_CONVERT
     if (watch_gpu_blit_rect(dst, dst_stride, src, width, height,
+#if WATCH_NATIVE_RGB565
+                           NEMA_RGB565, width * sizeof(uint16_t))) {
+#else
                            NEMA_BGRA8888, width * sizeof(uint32_t))) {
+#endif
         ++watch_gpu_stats.convert_gpu;
         return;
     }
 #endif
+#if WATCH_NATIVE_RGB565
+    const uint16_t *pixels = src;
+    for (size_t row = 0; row < height; ++row)
+        memcpy(dst + row * dst_stride, pixels + row * width, width * sizeof(*dst));
+#else
     watch_bgra8888_rect_to_rgb565(dst, dst_stride, src, width, height);
+#endif
     watch_gpu_cpu_write_complete();
     ++watch_gpu_stats.convert_cpu;
 }

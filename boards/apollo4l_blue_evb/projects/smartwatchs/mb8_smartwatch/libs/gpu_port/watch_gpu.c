@@ -75,5 +75,9 @@ void watch_gpu_init(void)
     watch_gpu_profile_init();
     am_util_stdio_printf("GPU IRQ: immediate RTOS wake; profile UART below LVGL.\r\n");
     watch_gpu_ready = true;
+#if WATCH_NATIVE_RGB565
+    am_util_stdio_printf("Native RGB565: LVGL16 -> Nema RGB565 -> RGB565 panel; no BGRA conversion.\r\n");
+#else
     am_util_stdio_printf("Ambiq LVGL 8.1 GPU initialized; BGRA8888 -> RGB565 panel.\r\n");
+#endif
 }

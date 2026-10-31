@@ -31,7 +31,11 @@ static volatile uint8_t requested_brightness = 175;
 static uint8_t applied_brightness = 175;
 static lv_indev_drv_t indev_drv;
 static img_obj_t gpu_framebuffer = { .w = display_width, .h = DRAW_BUF_LINES,
+                                    #if WATCH_NATIVE_RGB565
+                                    .format = NEMA_RGB565 };
+#else
                                     .format = NEMA_BGRA8888 };
+#endif
 /* Keep two complete RGB565 panel images independent of the small GPU buffers.
  * Submit dirty rows only on LVGL's last flush: the TE-driven panel transport
  * sees one transfer per refresh, not one panel refresh per 64-line stripe. */
@@ -40,7 +44,11 @@ static uint16_t panel_pixels[display_width * display_height];
 static uint16_t *panel_back_pixels;
 static uint16_t *panel_latest = panel_pixels;
 static uint16_t *panel_drawing;
+#if WATCH_NATIVE_RGB565
+_Static_assert(sizeof(lv_color_t) == 2, "Native renderer requires RGB565");
+#else
 _Static_assert(sizeof(lv_color_t) == 4, "Ambiq GPU archive requires 32-bit color");
+#endif
 
 void lvgl_display_init(void* pvParameters) {
     while (!watch_gpu_ready) vTaskDelay(pdMS_TO_TICKS(1));
@@ -124,10 +132,16 @@ void lvgl_display_init(void* pvParameters) {
 
 void lv_rounder_cb(lv_disp_drv_t *disp_drv, lv_area_t *area)
 {
+#if WATCH_NATIVE_RGB565
+    /* Keep RGB565 row pitches 64-bit aligned, including narrow invalidations. */
+    area->x1 &= ~3;
+    area->x2 |= 3;
+#else
     /* 1) Align the start to an even column */
     if (area->x1 & 1) area->x1--;
     /* 2) Ensure width is even (x2 becomes odd if needed) */
     if (((area->x2 - area->x1 + 1) & 1) != 0) area->x2++;
+#endif
 }
 
 void lvgl_log_cb(const char * buf)

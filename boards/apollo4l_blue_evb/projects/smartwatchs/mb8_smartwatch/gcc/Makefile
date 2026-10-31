@@ -10,6 +10,11 @@ SIZE := $(TOOLCHAIN)-size
 JOBS ?= 8
 GPU_PROFILE ?= 0
 GPU_CONVERT ?= 1
+# Native experiment never links the vendor 32-bit LVGL renderer.
+GPU_NATIVE_565 ?= 1
+ifneq ($(filter $(GPU_NATIVE_565),0 1),$(GPU_NATIVE_565))
+$(error GPU_NATIVE_565 must be 0 or 1)
+endif
 SHELL := /bin/bash
 
 LVGL_DIR := $(ROOT_DIR)/third_party/LVGL/lvgl
@@ -37,6 +42,11 @@ LVGL_SRC := $(filter-out $(LVGL_DIR)/src/misc/lv_mem.c $(LVGL_DIR)/src/misc/lv_t
 FONT_OVERRIDES := $(notdir $(wildcard ../libs/gpu_port/lv_font_montserrat_*.c))
 LVGL_SRC := $(filter-out $(addprefix $(LVGL_DIR)/src/font/,$(FONT_OVERRIDES)),$(LVGL_SRC))
 PORT_SRC := $(wildcard ../libs/gpu_port/*.c)
+ifeq ($(GPU_NATIVE_565),1)
+PORT_SRC := $(filter-out ../libs/gpu_port/lv_gpu_ambiq_nema.c,$(PORT_SRC))
+else
+PORT_SRC := $(filter-out ../libs/gpu_port/watch_gpu_rgb565.c,$(PORT_SRC))
+endif
 AMBIQ_SRC := $(addprefix $(AMBIQ_DIR)/,lv_ambiq_nema_hal.c lv_ambiq_misc.c lv_ambiq_font_align.c lv_ambiq_decoder.c)
 # The local watch_nema_hal.c fixes the SDK binary-semaphore ISR exit.
 NEMA_SRC := $(addprefix $(NEMA_PLATFORM_DIR)/,nema_event.c nema_utils.c)
@@ -54,27 +64,31 @@ INCLUDE_DIRS += $(LVGL_DIR) $(LVGL_DIR)/src $(LVGL_DIR)/src/misc $(LVGL_DIR)/src
 INCLUDE_DIRS += $(NEMA_DIR)/NemaGFX_SDK/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/common/mem $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaGFX $(NEMA_DIR)/NemaGFX_SDK/include/tsi/NemaDC $(NEMA_DIR)/NemaGFX_SDK/include/tsi/common $(NEMA_PLATFORM_DIR)
 INCLUDE_DIRS += $(APP_DIRS)
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
-CPPFLAGS += -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_CONVERT=$(GPU_CONVERT) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
+CPPFLAGS += -DWATCH_NATIVE_RGB565=$(GPU_NATIVE_565) -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_CONVERT=$(GPU_CONVERT) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
 ARCH := -mthumb -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard
 CFLAGS := $(ARCH) -std=gnu11 -O2 -g3 -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -MMD -MP
 LDFLAGS := $(ARCH) -nostartfiles -static -Tlinker_script.ld -Wl,--gc-sections,--entry,Reset_Handler,-Map,$(CONFIG)/$(TARGET).map,--print-memory-usage
 HAL_LIB := $(ROOT_DIR)/mcu/apollo4l/hal/mcu/gcc/bin/libam_hal.a
 BSP_LIB := ../../../../bsp/gcc/bin/libam_bsp.a
 GPU_LIB ?= $(AMBIQ_DIR)/gpu_lib_apollo4/gcc/bin/lvgl_ambiq_porting.a
+ifeq ($(GPU_NATIVE_565),1)
+# Deliberately exclude the incompatible 32-bit LVGL archive, even if supplied.
+override GPU_LIB :=
+endif
 NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 
 .PHONY: all objects clean check-libs FORCE
 FORCE:
 $(CONFIG)/.compiler-flags: FORCE
 	@mkdir -p $(CONFIG)
-	@printf '%s\n' 'GPU_PROFILE=$(GPU_PROFILE) GPU_CONVERT=$(GPU_CONVERT) TOOLCHAIN=$(TOOLCHAIN) CFLAGS=$(CFLAGS)' > $@.tmp
+	@printf '%s\n' 'GPU_NATIVE_565=$(GPU_NATIVE_565) GPU_PROFILE=$(GPU_PROFILE) GPU_CONVERT=$(GPU_CONVERT) TOOLCHAIN=$(TOOLCHAIN) CFLAGS=$(CFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 
 all: $(CONFIG)/$(TARGET).bin
 objects: $(OBJS)
 check-libs:
-	@missing=0; for lib in "$(GPU_LIB)" "$(NEMA_LIB)"; do if [ ! -f "$$lib" ]; then echo "Missing vendor GPU library: $$lib" >&2; missing=1; fi; done; [ $$missing -eq 0 ] || { echo "Restore these from the licensed AmbiqSuite R4.5.0 package. No stubs are used." >&2; exit 1; }
+	@missing=0; for lib in $(GPU_LIB) $(NEMA_LIB); do if [ ! -f "$$lib" ]; then echo "Missing vendor GPU library: $$lib" >&2; missing=1; fi; done; [ $$missing -eq 0 ] || { echo "Restore these from the licensed AmbiqSuite R4.5.0 package. No stubs are used." >&2; exit 1; }
 
 define compile_rule
 $(call obj,$(1)): $(1) Makefile $(CONFIG)/.compiler-flags
