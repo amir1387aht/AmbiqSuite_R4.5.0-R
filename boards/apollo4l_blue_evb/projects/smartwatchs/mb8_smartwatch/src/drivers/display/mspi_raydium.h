@@ -239,6 +239,13 @@ extern uint32_t am_devices_mspi_rm69330_set_scanline(void *pHandle,
 //! @return 32-bit status
 //
 //*****************************************************************************
+extern uint32_t am_devices_mspi_rm69330_nonblocking_write(void *pHandle,
+                                                          const uint8_t *pui8TxBuffer,
+                                                          uint32_t ui32NumBytes,
+                                                          bool bWaitForCompletion,
+                                                          bool bContinue, 
+                                                          void *pCallbackCtxt);
+
 //! @brief Programs the given range of display addresses.
 //!
 //! @param pHandle              - MSPI handle
@@ -338,6 +345,25 @@ extern uint32_t am_devices_mspi_rm69330_set_transfer_window(void *pHandle,
                                                             uint16_t ui16ColumnSize,
                                                             uint16_t ui16RowStart,
                                                             uint16_t ui16RowSize);
+
+uint32_t am_devices_mspi_rm69330_nonblocking_command_write(void* pHandle,
+    uint32_t ui32Instr,
+    uint8_t* pData,
+    uint32_t ui32NumBytes,
+    bool bWaitForCompletion,
+    void* pCallbackCtxt);
+
+extern void* g_pArgXferDone;
+extern void* g_pHandle;
+
+uint32_t am_devices_mspi_rm69330_nonblocking_set_transfer_window(void* pHandle,
+    uint16_t ui16ColumnStart,
+    uint16_t ui16ColumnSize,
+    uint16_t ui16RowStart,
+    uint16_t ui16RowSize,
+    void* pArgXferDone);
+
+void am_devices_mspi_rm69330_set_transfer_window_column_callback();
 
 //*****************************************************************************
 //

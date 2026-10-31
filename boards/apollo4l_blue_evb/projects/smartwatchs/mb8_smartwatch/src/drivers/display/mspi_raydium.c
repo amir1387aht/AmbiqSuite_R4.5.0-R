@@ -51,8 +51,6 @@
 #include "am_util_stdio.h"
 #include "am_util_delay.h"
 #include "./mspi_raydium.h"
-#include "display_bus_config.h"
-#include <string.h>
 
 //*****************************************************************************
 //
@@ -80,7 +78,6 @@ typedef struct
     void                        *pMspiHandle;
     am_hal_mspi_dev_config_t    mspiDevCfg;
     bool                        bOccupied;
-    bool                        bBusReady;
 } am_devices_mspi_rm69330_t;
 
 #if defined (AM_PART_APOLLO3) || defined (AM_PART_APOLLO3P)
@@ -246,7 +243,7 @@ static am_hal_mspi_dev_config_t  QuadCE1DisplayMSPICfg =
 
 am_devices_mspi_rm69330_t gAmDisplay[AM_DEVICES_MSPI_RM69330_MAX_DEVICE_NUM];
 
-
+am_hal_mspi_clock_e g_MaxReadFreq = AM_HAL_MSPI_CLK_8MHZ;
 
 void
 pfnMSPI_RM69330_Callback(void *pCallbackCtxt, uint32_t status)
@@ -257,88 +254,273 @@ pfnMSPI_RM69330_Callback(void *pCallbackCtxt, uint32_t status)
     *(volatile uint32_t *)pCallbackCtxt = status;
 }
 
-/* Register commands use a bounded, word-aligned PIO transaction. Lower the
- * clock before entering serial mode, then restore 1-4-4 and the pixel clock.
- * CLOCK_CONFIG also updates the HAL's 96 MHz TX edge and DMA thresholds.
- * Any HAL failure poisons the handle: never replay an ambiguous command or
- * send pixels in serial mode.
- */
-static uint32_t display_command_transfer(
-    void *handle, uint32_t instruction, uint8_t *data, uint32_t bytes, bool read)
+uint32_t am_devices_mspi_rm69330_command_write(void *pHandle,
+                                      uint32_t ui32Instr,
+                                      uint8_t *pData,
+                                      uint32_t ui32NumBytes)
 {
-    am_devices_mspi_rm69330_t *display = NULL;
-    for (unsigned i = 0; i < AM_DEVICES_MSPI_RM69330_MAX_DEVICE_NUM; ++i)
+    am_hal_mspi_pio_transfer_t      Transaction;
+    am_devices_mspi_rm69330_t       *pDisplay = (am_devices_mspi_rm69330_t *)pHandle;
+    uint32_t ui32DeviceConfig = (pDisplay->mspiDevCfg.eDeviceConfig % 2) ? AM_HAL_MSPI_FLASH_SERIAL_CE1 : AM_HAL_MSPI_FLASH_SERIAL_CE0;
+    bool bNeedSwitch = false;
+    uint32_t        ui32Status = AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS;
+
+#if defined(AM_PART_APOLLO4L)
+    //
+    // Disable reverse high-byte with low-byte.
+    //
+    am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_HALF_WORD_REVERSE_DIS, NULL);
+#endif
+
+    if ( pDisplay->mspiDevCfg.eDeviceConfig > AM_HAL_MSPI_FLASH_SERIAL_CE1 )
     {
-        if (handle == &gAmDisplay[i] && gAmDisplay[i].bOccupied)
+        bNeedSwitch = true;
+    }
+
+    if ( (!pDisplay->bOccupied) || (ui32NumBytes > 4) )
+    {
+        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR; // display has not been initialized. // too many bytes
+    }
+
+    //
+    // Switch to Cmd configuration.
+    //
+    if ( bNeedSwitch )
+    {
+        am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &ui32DeviceConfig);
+    }
+
+    //
+    // Create the individual write transaction.
+    //
+    Transaction.ui32NumBytes       = ui32NumBytes;
+    Transaction.bScrambling        = false;
+    Transaction.eDirection         = AM_HAL_MSPI_TX;
+    Transaction.bSendAddr          = true;
+    Transaction.ui32DeviceAddr     = ui32Instr << 8;
+    Transaction.bSendInstr         = true;
+    Transaction.ui16DeviceInstr    = AM_DEVICES_MSPI_RM69330_CMD_WRITE;
+    Transaction.bTurnaround        = false;
+#if defined(AM_PART_APOLLO3) || defined(AM_PART_APOLLO3P)
+    Transaction.bQuadCmd                = false;
+#if defined(AM_PART_APOLLO3P)
+    Transaction.bDCX                    = false;
+    Transaction.bEnWRLatency            = false;
+    Transaction.bContinue               = false;    // MSPI CONT is deprecated for Apollo3
+#endif
+#else
+    Transaction.bDCX                    = false;
+    Transaction.bEnWRLatency            = false;
+    Transaction.bContinue               = false;  // MSPI CONT is deprecated for Apollo4
+#if defined(AM_PART_APOLLO4)
+    Transaction.eDeviceNum              = AM_HAL_MSPI_DEVICE0;
+#endif
+#endif
+
+    Transaction.pui32Buffer        = (uint32_t*)pData;
+
+    //
+    // Execute the transaction over MSPI.
+    //
+    uint32_t writeStatus = am_hal_mspi_blocking_transfer(pDisplay->pMspiHandle, &Transaction, AM_DEVICES_MSPI_RM69330_TIMEOUT);
+    if (AM_HAL_STATUS_SUCCESS != writeStatus)
+    {
+        am_util_stdio_printf("Display CW Error - Failed to send command. [NB: %d, WS: %d]\n", ui32NumBytes, writeStatus);
+        ui32Status = AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+    }
+    // am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_BIG_ENDIAN, NULL);
+    //
+    // Switch to Device configuration.
+    //
+    if ( bNeedSwitch )
+    {
+        //
+        // Re-Configure the MSPI for the requested operation mode.
+        //
+        am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &pDisplay->mspiDevCfg.eDeviceConfig);
+    }
+
+    return ui32Status;
+}
+
+uint32_t am_devices_mspi_rm69330_nonblocking_command_write(void* pHandle,
+    uint32_t ui32Instr,
+    uint8_t* pData,
+    uint32_t ui32NumBytes,
+    bool bWaitForCompletion,
+    void* pCallbackCtxt)
+{
+    am_hal_mspi_dma_transfer_t Transaction;
+    am_devices_mspi_rm69330_t* pDisplay = (am_devices_mspi_rm69330_t*)pHandle;
+    uint32_t ui32DeviceConfig = (pDisplay->mspiDevCfg.eDeviceConfig % 2) ? AM_HAL_MSPI_FLASH_SERIAL_CE1 : AM_HAL_MSPI_FLASH_SERIAL_CE0;
+    uint32_t ui32Status = AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS;
+    bool bNeedSwitch = false;
+
+    if ((!pDisplay->bOccupied) || (ui32NumBytes > 4))
+    {
+        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR; // Invalid configuration or too many bytes.
+    }
+
+    // Check if we need to switch configuration.
+    if (pDisplay->mspiDevCfg.eDeviceConfig > AM_HAL_MSPI_FLASH_SERIAL_CE1)
+    {
+        bNeedSwitch = true;
+    }
+
+    // Switch to Command configuration if needed.
+    if (bNeedSwitch)
+    {
+        am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &ui32DeviceConfig);
+    }
+
+    // Set up the DMA transfer structure.
+    Transaction.ui32DeviceAddress = ui32Instr << 8;
+    Transaction.ui8Priority = 1;
+    Transaction.eDirection = AM_HAL_MSPI_TX;
+    Transaction.ui32TransferCount = ui32NumBytes;
+    Transaction.ui32SRAMAddress = (uint32_t)pData;
+    Transaction.ui32PauseCondition = 0;
+    Transaction.ui32StatusSetClr = 0;
+#if defined(AM_PART_APOLLO4)
+    Transaction.eDeviceNum = AM_HAL_MSPI_DEVICE0;
+#endif
+
+    // Initiate the non-blocking transfer.
+    volatile uint32_t ui32DMAStatus = 0xFFFFFFFF;
+    ui32Status = am_hal_mspi_nonblocking_transfer(pDisplay->pMspiHandle,
+        &Transaction,
+        AM_HAL_MSPI_TRANS_DMA,
+        pCallbackCtxt,
+        (void*)&ui32DMAStatus);
+
+    if (AM_HAL_STATUS_SUCCESS != ui32Status)
+    {
+        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+    }
+
+    if (bWaitForCompletion)
+    {
+        // Wait for the DMA transaction to complete or timeout.
+        for (uint32_t i = 0; i < AM_DEVICES_MSPI_RM69330_TIMEOUT; i++)
         {
-            display = &gAmDisplay[i];
-            break;
+            if (AM_HAL_STATUS_SUCCESS == ui32DMAStatus)
+            {
+                break;
+            }
+            am_util_delay_us(1); // Delay for about 1 microsecond.
+        }
+
+        if (AM_HAL_STATUS_SUCCESS != ui32DMAStatus)
+        {
+            return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
         }
     }
-    if (!display || !display->bBusReady || instruction > 255u || bytes > 4u || (bytes && !data))
-        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
 
-    uint32_t word = 0;
-    if (!read && bytes)
-        memcpy(&word, data, bytes);
-    am_hal_mspi_pio_transfer_t transaction = {0};
-    transaction.ui32NumBytes               = bytes;
-    transaction.eDirection                 = read ? AM_HAL_MSPI_RX : AM_HAL_MSPI_TX;
-    transaction.bSendAddr                  = true;
-    transaction.ui32DeviceAddr             = instruction << 8;
-    transaction.bSendInstr                 = true;
-    transaction.ui16DeviceInstr =
-        read ? AM_DEVICES_MSPI_RM69330_CMD_READ : AM_DEVICES_MSPI_RM69330_CMD_WRITE;
-    transaction.pui32Buffer = &word;
+    // Switch back to the original configuration if needed.
+    if (bNeedSwitch)
+    {
+        am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &pDisplay->mspiDevCfg.eDeviceConfig);
+    }
 
-    am_hal_mspi_clock_e command_clock =
-        read ? WATCH_DISPLAY_READ_CLOCK : WATCH_DISPLAY_COMMAND_CLOCK;
-    am_hal_mspi_device_e serial_mode = (display->mspiDevCfg.eDeviceConfig % 2)
-                                           ? AM_HAL_MSPI_FLASH_SERIAL_CE1
-                                           : AM_HAL_MSPI_FLASH_SERIAL_CE0;
-    uint32_t             status =
-        am_hal_mspi_control(display->pMspiHandle, AM_HAL_MSPI_HALF_WORD_REVERSE_DIS, NULL);
-    if (!status)
-        status =
-            am_hal_mspi_control(display->pMspiHandle, AM_HAL_MSPI_REQ_CLOCK_CONFIG, &command_clock);
-    if (!status)
-        status =
-            am_hal_mspi_control(display->pMspiHandle, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &serial_mode);
-    if (!status)
-        status = am_hal_mspi_control(
-            display->pMspiHandle, AM_HAL_MSPI_REQ_PIOMIXED_CONFIG, &serial_mode);
-    if (!status)
-        status = am_hal_mspi_blocking_transfer(
-            display->pMspiHandle, &transaction, AM_DEVICES_MSPI_RM69330_TIMEOUT);
-
-    /* Attempt all restoration operations even if the command failed. A failed
-     * command may have reached the panel, so it is never replayed automatically. */
-    uint32_t restore_pio = am_hal_mspi_control(
-        display->pMspiHandle, AM_HAL_MSPI_REQ_PIOMIXED_CONFIG, &display->mspiDevCfg.eDeviceConfig);
-    uint32_t restore_mode = am_hal_mspi_control(
-        display->pMspiHandle, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &display->mspiDevCfg.eDeviceConfig);
-    uint32_t restore_clock = am_hal_mspi_control(
-        display->pMspiHandle, AM_HAL_MSPI_REQ_CLOCK_CONFIG, &display->mspiDevCfg.eClockFreq);
-    if (status || restore_pio || restore_mode || restore_clock)
-        display->bBusReady = false;
-    if (status || restore_pio || restore_mode || restore_clock)
-        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
-    if (read && bytes)
-        memcpy(data, &word, bytes);
-    return AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS;
+    return ui32Status;
 }
 
-uint32_t am_devices_mspi_rm69330_command_write(
-    void *handle, uint32_t instruction, uint8_t *data, uint32_t bytes)
+uint32_t am_devices_mspi_rm69330_command_read(void *pHandle,
+                                     uint32_t ui32Instr,
+                                     uint32_t *pData,
+                                     uint32_t ui32NumBytes)
 {
-    return display_command_transfer(handle, instruction, data, bytes, false);
+    am_hal_mspi_pio_transfer_t      Transaction;
+    am_devices_mspi_rm69330_t       *pDisplay = (am_devices_mspi_rm69330_t *)pHandle;
+    // Note: the read operation can work in both 4 and 3 wires mode, it depends on the hardware connection,
+    // here is the example for 4 wires connection, for people who use 3 wires connection, the micros below need
+    // to be changed to AM_HAL_MSPI_FLASH_SERIAL_CE1_3WIRE and AM_HAL_MSPI_FLASH_SERIAL_CE0_3WIRE, and the
+    // bNeedSwitch condition need to be modified accordingly.
+    uint32_t ui32DeviceConfig = (pDisplay->mspiDevCfg.eDeviceConfig % 2) ? AM_HAL_MSPI_FLASH_SERIAL_CE1 : AM_HAL_MSPI_FLASH_SERIAL_CE0;
+    bool bNeedSwitch = false;
+    uint32_t        ui32Status = AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS;
+
+#if defined(AM_PART_APOLLO4L)
+    //
+    // Disable reverse high-byte with low-byte.
+    //
+    am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_HALF_WORD_REVERSE_DIS, NULL);
+#endif
+
+    if ( pDisplay->mspiDevCfg.eDeviceConfig > AM_HAL_MSPI_FLASH_SERIAL_CE1_3WIRE )
+    {
+        bNeedSwitch = true;
+    }
+
+    if (!pDisplay->bOccupied)
+    {
+        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR; // display has not been initialized.
+    }
+    //am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_LITTLE_ENDIAN, NULL);
+    //
+    // Switch to Cmd configuration.
+    //
+    if ( bNeedSwitch )
+    {
+        am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &ui32DeviceConfig);
+    }
+    //
+    // Only support up to 10Mhz read
+    //
+    am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_CLOCK_CONFIG, &g_MaxReadFreq);
+    //
+    // Create the individual write transaction.
+    //
+    Transaction.ui32NumBytes       = ui32NumBytes;
+    Transaction.bScrambling        = false;
+    Transaction.eDirection         = AM_HAL_MSPI_RX;
+    Transaction.bSendAddr          = true;
+    Transaction.ui32DeviceAddr     = ui32Instr << 8;
+    Transaction.bSendInstr         = true;
+    Transaction.ui16DeviceInstr    = AM_DEVICES_MSPI_RM69330_CMD_READ;
+    Transaction.bTurnaround        = false;
+#if defined (AM_PART_APOLLO3) || defined (AM_PART_APOLLO3P)
+    Transaction.bQuadCmd           = false;
+#if defined(AM_PART_APOLLO3P)
+    Transaction.bDCX                    = false;
+    Transaction.bEnWRLatency            = false;
+    Transaction.bContinue               = false;    // MSPI CONT is deprecated for Apollo3
+#endif
+#else
+    Transaction.bDCX                    = false;
+    Transaction.bEnWRLatency            = false;
+    Transaction.bContinue               = false;    // MSPI CONT is deprecated for Apollo4
+#if defined(AM_PART_APOLLO4)
+    Transaction.eDeviceNum              = AM_HAL_MSPI_DEVICE0;
+#endif
+#endif
+    Transaction.pui32Buffer           = pData;
+
+    //
+    // Execute the transaction over MSPI.
+    //
+    uint32_t writeStatus = am_hal_mspi_blocking_transfer(pDisplay->pMspiHandle, &Transaction, AM_DEVICES_MSPI_RM69330_TIMEOUT);
+    if (AM_HAL_STATUS_SUCCESS != writeStatus)
+    {
+        am_util_stdio_printf("Display CR Error - Failed to send command. [NB: %d, WS: %d]\n", ui32NumBytes, writeStatus);
+        ui32Status = AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+    }
+    //am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_BIG_ENDIAN, NULL);
+    //
+    // Switch to Device configuration.
+    //
+    am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_CLOCK_CONFIG, &pDisplay->mspiDevCfg.eClockFreq);
+    if ( bNeedSwitch )
+    {
+        //
+        // Re-Configure the MSPI for the requested operation mode.
+        //
+        am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &pDisplay->mspiDevCfg.eDeviceConfig);
+    }
+
+    return ui32Status;
 }
 
-uint32_t am_devices_mspi_rm69330_command_read(
-    void *handle, uint32_t instruction, uint32_t *data, uint32_t bytes)
-{
-    return display_command_transfer(handle, instruction, (uint8_t *)data, bytes, true);
-}
 
 //*****************************************************************************
 //
@@ -541,8 +723,7 @@ am_devices_mspi_rm69330_init(uint32_t ui32Module,
     uint32_t        ui32Index;
     void            *pMspiHandle;
 
-    if ((ui32Module >= AM_REG_MSPI_NUM_MODULES) || (pDevCfg == NULL) ||
-        !ppHandle || !ppMspiHandle)
+    if ((ui32Module > AM_REG_MSPI_NUM_MODULES) || (pDevCfg == NULL))
     {
         am_util_stdio_printf("Error - AM_REG_MSPI_NUM_MODULES null \n");
         return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
@@ -642,15 +823,13 @@ am_devices_mspi_rm69330_init(uint32_t ui32Module,
     gAmDisplay[ui32Index].pMspiHandle = pMspiHandle;
     gAmDisplay[ui32Index].ui32Module = ui32Module;
     gAmDisplay[ui32Index].bOccupied = true;
-    gAmDisplay[ui32Index].bBusReady = true;
 
     //am_devices_lcm_init((void*)&gAmDisplay[ui32Index], &g_sGraphic_conf);
     //
     // Read the Device ID.
     //
     ui32Status = am_devices_mspi_rm69330_read_id((void*)&gAmDisplay[ui32Index], &ui32DeviceID);
-    if (ui32Status != AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS)
-        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+    //am_util_stdio_printf("RM69330 Device ID = %6X\n", (ui32DeviceID & 0x00FFFFFF));
     //
     // Enable MSPI interrupts.
     //
@@ -780,6 +959,96 @@ am_devices_mspi_rm69330_display_on(void *pHandle)
 //
 //*****************************************************************************
 uint32_t
+am_devices_mspi_rm69330_nonblocking_write(void *pHandle,
+                                          const uint8_t *pui8TxBuffer,
+                                          uint32_t ui32NumBytes,
+                                          bool bWaitForCompletion,
+                                          bool bContinue,
+                                          void *pCallbackCtxt)
+{
+    am_hal_mspi_dma_transfer_t    Transaction;
+    am_devices_mspi_rm69330_t *pDisplay = (am_devices_mspi_rm69330_t *)pHandle;
+    uint32_t                      ui32Status;
+    uint32_t                      ui32BytesLeft = ui32NumBytes;
+
+    while (ui32BytesLeft)
+    {
+        if ((ui32BytesLeft == ui32NumBytes) && (!bContinue))
+        {
+            Transaction.ui32DeviceAddress = AM_DEVICES_MSPI_RM69330_MEM_WRITE << 8;
+        }
+        else
+        {
+            Transaction.ui32DeviceAddress = AM_DEVICES_MSPI_RM69330_MEM_WRITE_CONTINUE << 8;
+        }
+        // Set the DMA priority
+        Transaction.ui8Priority = 1;
+
+        // Set the transfer direction to TX (Write)
+        Transaction.eDirection = AM_HAL_MSPI_TX;
+
+        Transaction.ui32TransferCount = (ui32BytesLeft > BYTE_NUM_PER_WRITE) ? BYTE_NUM_PER_WRITE : ui32BytesLeft;
+
+        // Set the source SRAM buffer address.
+        Transaction.ui32SRAMAddress = (uint32_t)pui8TxBuffer;
+
+        // Clear the CQ stimulus.
+        Transaction.ui32PauseCondition = 0;
+        // Clear the post-processing
+        Transaction.ui32StatusSetClr = 0;
+#if defined(AM_PART_APOLLO4)
+        Transaction.eDeviceNum         = AM_HAL_MSPI_DEVICE0;
+#endif
+
+       // Start the transaction.
+        volatile uint32_t ui32DMAStatus = 0xFFFFFFFF;
+        ui32Status = am_hal_mspi_nonblocking_transfer(pDisplay->pMspiHandle, &Transaction, AM_HAL_MSPI_TRANS_DMA,
+                                                      pCallbackCtxt, (void *)&ui32DMAStatus);
+
+        // Check the transaction status.
+        if (AM_HAL_STATUS_SUCCESS != ui32Status)
+        {
+            return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+        }
+
+        if (bWaitForCompletion)
+        {
+          //
+          // Wait for DMA Complete or Timeout
+          //
+          for (uint32_t i = 0; i < AM_DEVICES_MSPI_RM69330_TIMEOUT; i++)
+          {
+              if (AM_HAL_STATUS_SUCCESS == ui32DMAStatus)
+              {
+                  break;
+              }
+              //
+              // Call the BOOTROM cycle function to delay for about 1 microsecond.
+              //
+              am_util_delay_us(1);
+          }
+          // Check the status.
+          if (AM_HAL_STATUS_SUCCESS != ui32DMAStatus)
+          {
+              return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+          }
+        }
+        ui32BytesLeft -= Transaction.ui32TransferCount;
+        pui8TxBuffer += Transaction.ui32TransferCount;
+    }
+
+    //
+    // Return the status.
+    //
+    return AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS;
+}
+
+//*****************************************************************************
+//
+// Programs the given range of display addresses.
+//
+//*****************************************************************************
+uint32_t
 am_devices_mspi_rm69330_nonblocking_write_adv(void *pHandle,
                                               uint8_t *pui8TxBuffer,
                                               uint32_t ui32NumBytes,
@@ -806,74 +1075,77 @@ am_devices_mspi_rm69330_nonblocking_write_adv(void *pHandle,
 // Programs the given range of display addresses.
 //
 //*****************************************************************************
-uint32_t am_devices_mspi_rm69330_nonblocking_write_endian(void *pHandle,
-    uint8_t                                                    *pui8TxBuffer,
-    uint32_t                                                    ui32NumBytes,
-    uint32_t                                                    ui32PauseCondition,
-    uint32_t                                                    ui32StatusSetClr,
-    am_hal_mspi_callback_t                                      pfnCallback,
-    void                                                       *pCallbackCtxt,
-    bool                                                        bContinue,
-    bool                                                        bReverseBytes)
+uint32_t
+am_devices_mspi_rm69330_nonblocking_write_endian(void *pHandle,
+                                                 uint8_t *pui8TxBuffer,
+                                                 uint32_t ui32NumBytes,
+                                                 uint32_t ui32PauseCondition,
+                                                 uint32_t ui32StatusSetClr,
+                                                 am_hal_mspi_callback_t pfnCallback,
+                                                 void *pCallbackCtxt,
+                                                 bool bContinue,
+                                                 bool bReverseBytes)
 {
-    am_hal_mspi_dma_transfer_t Transaction   = {0};
-    am_devices_mspi_rm69330_t *pDisplay      = (am_devices_mspi_rm69330_t *)pHandle;
-    uint32_t                   ui32BytesLeft = ui32NumBytes;
-    if (!pDisplay || !pDisplay->bOccupied || !pDisplay->bBusReady || !pui8TxBuffer ||
-        !ui32NumBytes ||
-        (pDisplay->mspiDevCfg.eDeviceConfig != AM_HAL_MSPI_FLASH_QUAD_CE0_1_4_4 &&
-            pDisplay->mspiDevCfg.eDeviceConfig != AM_HAL_MSPI_FLASH_QUAD_CE1_1_4_4))
-        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+    am_hal_mspi_dma_transfer_t Transaction;
+    am_devices_mspi_rm69330_t *pDisplay = (am_devices_mspi_rm69330_t *)pHandle;
+    uint32_t      ui32BytesLeft = ui32NumBytes;
 
-    uint32_t reverse_status = am_hal_mspi_control(pDisplay->pMspiHandle,
-        bReverseBytes ? AM_HAL_MSPI_HALF_WORD_REVERSE_EN : AM_HAL_MSPI_HALF_WORD_REVERSE_DIS,
-        NULL);
-    if (reverse_status != AM_HAL_STATUS_SUCCESS)
+#if defined(AM_PART_APOLLO4L)
+    //
+    // Reverse endian or not
+    //
+    if ( true == bReverseBytes )
     {
-        pDisplay->bBusReady = false;
-        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+        am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_HALF_WORD_REVERSE_EN, NULL);
     }
+    else
+    {
+        am_hal_mspi_control(pDisplay->pMspiHandle, AM_HAL_MSPI_HALF_WORD_REVERSE_DIS, NULL);
+    }
+#endif //defined(AM_PART_APOLLO4L)
 
     //
     // Create the transaction.
     //
-    Transaction.ui8Priority = 1;
-    Transaction.eDirection  = AM_HAL_MSPI_TX;
-    Transaction.ui32TransferCount =
-        (ui32BytesLeft <= AM_HAL_MSPI_MAX_TRANS_SIZE) ? ui32BytesLeft : AM_HAL_MSPI_MAX_TRANS_SIZE;
-    Transaction.ui32DeviceAddress =
-        ((bContinue == true) ? AM_DEVICES_MSPI_RM69330_MEM_WRITE_CONTINUE
-                             : AM_DEVICES_MSPI_RM69330_MEM_WRITE)
-        << 8;
-    Transaction.ui32SRAMAddress    = (uint32_t)pui8TxBuffer;
-    Transaction.ui32PauseCondition = ui32PauseCondition;
-    Transaction.ui32StatusSetClr   = ui32StatusSetClr;
+    Transaction.ui8Priority               = 1;
+    Transaction.eDirection                = AM_HAL_MSPI_TX;
+    Transaction.ui32TransferCount         = (ui32BytesLeft <= AM_HAL_MSPI_MAX_TRANS_SIZE) ? ui32BytesLeft : AM_HAL_MSPI_MAX_TRANS_SIZE;
+    Transaction.ui32DeviceAddress         = ((bContinue == true) ? AM_DEVICES_MSPI_RM69330_MEM_WRITE_CONTINUE : AM_DEVICES_MSPI_RM69330_MEM_WRITE) << 8;
+    Transaction.ui32SRAMAddress           = (uint32_t)pui8TxBuffer;
+    Transaction.ui32PauseCondition        = ui32PauseCondition;
+    Transaction.ui32StatusSetClr          = ui32StatusSetClr;
 
     //
     // Execute the transction over MSPI.
     //
-    while (ui32BytesLeft)
+    if (am_hal_mspi_nonblocking_transfer(pDisplay->pMspiHandle,
+                                       &Transaction,
+                                       AM_HAL_MSPI_TRANS_DMA,
+                                       (ui32BytesLeft <= AM_HAL_MSPI_MAX_TRANS_SIZE) ? pfnCallback : NULL,
+                                       (ui32BytesLeft <= AM_HAL_MSPI_MAX_TRANS_SIZE) ? pCallbackCtxt : NULL))
     {
-        Transaction.ui32TransferCount =
-            ui32BytesLeft > AM_HAL_MSPI_MAX_TRANS_SIZE ? AM_HAL_MSPI_MAX_TRANS_SIZE : ui32BytesLeft;
-        bool last = Transaction.ui32TransferCount == ui32BytesLeft;
+        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+    }
+
+    Transaction.ui32DeviceAddress         = AM_DEVICES_MSPI_RM69330_MEM_WRITE_CONTINUE << 8;
+    for (int32_t block = 0; block < (ui32NumBytes / AM_HAL_MSPI_MAX_TRANS_SIZE); block++)
+    {
+        Transaction.ui32SRAMAddress += Transaction.ui32TransferCount;
+        ui32BytesLeft -=  Transaction.ui32TransferCount;
+        Transaction.ui32TransferCount         = (ui32BytesLeft <= AM_HAL_MSPI_MAX_TRANS_SIZE) ? ui32BytesLeft : AM_HAL_MSPI_MAX_TRANS_SIZE;
         if (am_hal_mspi_nonblocking_transfer(pDisplay->pMspiHandle,
-                &Transaction,
-                AM_HAL_MSPI_TRANS_DMA,
-                last ? pfnCallback : NULL,
-                last ? pCallbackCtxt : NULL))
+                                             &Transaction,
+                                             AM_HAL_MSPI_TRANS_DMA,
+                                             (ui32BytesLeft <= AM_HAL_MSPI_MAX_TRANS_SIZE) ? pfnCallback : NULL,
+                                             (ui32BytesLeft <= AM_HAL_MSPI_MAX_TRANS_SIZE) ? pCallbackCtxt : NULL))
         {
-            /* A prefix might already be queued. Do not retry or reuse the bus. */
-            pDisplay->bBusReady = false;
             return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
         }
-        ui32BytesLeft -= Transaction.ui32TransferCount;
-        Transaction.ui32SRAMAddress += Transaction.ui32TransferCount;
-        Transaction.ui32DeviceAddress = AM_DEVICES_MSPI_RM69330_MEM_WRITE_CONTINUE << 8;
     }
 
     return AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS;
 }
+
 
 //*****************************************************************************
 //
@@ -942,6 +1214,70 @@ am_devices_mspi_rm69330_set_transfer_window(void *pHandle,
         return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
 
     return AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS;
+}
+
+void* g_pArgXferDone;
+void* g_pHandle;
+
+uint32_t am_devices_mspi_rm69330_nonblocking_set_transfer_window(void* pHandle,
+    uint16_t ui16ColumnStart,
+    uint16_t ui16ColumnSize,
+    uint16_t ui16RowStart,
+    uint16_t ui16RowSize,
+    void* pArgXferDone)
+{
+    uint8_t ui8CMDBuf[4];
+    uint32_t ui32Status = AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS;
+
+    g_pArgXferDone = pArgXferDone;
+    g_pHandle = pHandle;
+
+    g_sGraphic_conf.ui16RowOffset = ui16RowStart;
+    g_sGraphic_conf.ui16ColumnOffset = ui16ColumnStart;
+    g_sGraphic_conf.ui16Height = ui16RowSize;
+    g_sGraphic_conf.ui16Width = ui16ColumnSize;
+
+    // Prepare row address set command
+    ui8CMDBuf[0] = ui16RowStart >> 8;
+    ui8CMDBuf[1] = ui16RowStart & 0xFF;
+    ui8CMDBuf[2] = (ui16RowStart + ui16RowSize - 1) >> 8;
+    ui8CMDBuf[3] = (ui16RowStart + ui16RowSize - 1) & 0xFF;
+
+    am_util_stdio_printf("1\n");
+    ui32Status = am_devices_mspi_rm69330_nonblocking_command_write(
+        pHandle,
+        AM_DEVICES_MSPI_RM69330_SET_ROW,
+        ui8CMDBuf,
+        4,
+        false, // Wait for completion
+        (void*)am_devices_mspi_rm69330_set_transfer_window_column_callback);
+
+    if (ui32Status != AM_DEVICES_MSPI_RM69330_STATUS_SUCCESS)
+    {
+        return AM_DEVICES_MSPI_RM69330_STATUS_ERROR;
+    }
+
+    return ui32Status;
+}
+
+void am_devices_mspi_rm69330_set_transfer_window_column_callback()
+{
+    uint8_t ui8CMDBuf[4];
+
+    // Prepare column address set command
+    ui8CMDBuf[0] = g_sGraphic_conf.ui16ColumnOffset >> 8;
+    ui8CMDBuf[1] = g_sGraphic_conf.ui16ColumnOffset & 0xFF;
+    ui8CMDBuf[2] = (g_sGraphic_conf.ui16ColumnOffset + g_sGraphic_conf.ui16Width - 1) >> 8;
+    ui8CMDBuf[3] = (g_sGraphic_conf.ui16ColumnOffset + g_sGraphic_conf.ui16Width - 1) & 0xFF;
+
+    am_util_stdio_printf("2\n");
+    am_devices_mspi_rm69330_nonblocking_command_write(
+        g_pHandle,
+        AM_DEVICES_MSPI_RM69330_SET_COLUMN,
+        ui8CMDBuf,
+        4,
+        false,
+        g_pArgXferDone);
 }
 
 //*****************************************************************************
