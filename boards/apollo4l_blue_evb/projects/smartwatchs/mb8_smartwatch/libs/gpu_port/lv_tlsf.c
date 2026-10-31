@@ -10,7 +10,7 @@
 #undef  printf
 #define printf LV_LOG_ERROR
 
-#define TLSF_MAX_POOL_SIZE LV_MEM_SSRAM_SIZE /* Largest enabled pool; no PSRAM. */
+#define TLSF_MAX_POOL_SIZE LV_MEM_SSRAM_SIZE /* Hardware ceiling; actual app pools are linker-sized. */
 
 #if !defined(_DEBUG)
     #define _DEBUG 0

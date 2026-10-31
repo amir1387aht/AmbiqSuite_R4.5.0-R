@@ -8,7 +8,7 @@
 #include "am_util.h"
 #include "FreeRTOS.h"
 #include "watch_glyph_cache.h"
-#include "watch_gpu_convert.h"
+#include "watch_gpu_copy.h"
 #include "watch_tick.h"
 #if !LV_USE_PERF_MONITOR || !LV_USE_LABEL || !LV_USE_GPU_AMBIQ_NEMA
 #error "This watch build requires the FPS monitor, labels and Nema GPU enabled"
@@ -63,7 +63,7 @@ void watch_gpu_init(void)
         configASSERT(0);
     }
     watch_gpu_glyph_cache_init();
-    watch_gpu_convert_init();
+    watch_gpu_copy_init();
 #if WATCH_GPU_PROFILE
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;
@@ -75,9 +75,5 @@ void watch_gpu_init(void)
     watch_gpu_profile_init();
     am_util_stdio_printf("GPU IRQ: immediate RTOS wake; profile UART below LVGL.\r\n");
     watch_gpu_ready = true;
-#if WATCH_NATIVE_RGB565
     am_util_stdio_printf("Native RGB565: LVGL16 -> Nema RGB565 -> RGB565 panel; no BGRA conversion.\r\n");
-#else
-    am_util_stdio_printf("Ambiq LVGL 8.1 GPU initialized; BGRA8888 -> RGB565 panel.\r\n");
-#endif
 }

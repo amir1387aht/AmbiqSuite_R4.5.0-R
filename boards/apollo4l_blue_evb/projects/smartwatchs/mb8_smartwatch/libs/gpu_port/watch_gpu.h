@@ -16,11 +16,11 @@ typedef struct {
     uint32_t panel_frames;
     uint32_t te_edges;
     uint32_t handler_cycles;
-    uint32_t convert_cycles;
+    uint32_t stage_cycles;
     uint32_t gpu_wait_cycles;
     uint32_t panel_wait_cycles;
-    uint32_t convert_gpu;
-    uint32_t convert_cpu;
+    uint32_t stage_gpu;
+    uint32_t stage_cpu;
     uint32_t te_wait_cycles;
     uint32_t panel_dma_cycles;
     uint32_t frame_copy_cycles;

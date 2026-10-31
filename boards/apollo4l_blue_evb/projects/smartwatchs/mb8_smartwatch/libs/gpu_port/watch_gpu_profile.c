@@ -7,15 +7,9 @@
 #include "task.h"
 #include "watch_tick.h"
 #include "drivers/uart/uart_output.h"
-#if WATCH_NATIVE_RGB565
 #define TRANSFER_TIME "stage_ms"
 #define TRANSFER_GPU "stage_gpu"
 #define TRANSFER_CPU "stage_cpu"
-#else
-#define TRANSFER_TIME "convert_ms"
-#define TRANSFER_GPU "conv_gpu"
-#define TRANSFER_CPU "conv_cpu"
-#endif
 
 typedef struct {
     watch_gpu_stats_t current;
@@ -42,8 +36,8 @@ static void profile_output_task(void *argument)
             (unsigned long)DELTA(submitted_cl),
             (unsigned long)DELTA(gpu_glyphs), (unsigned long)DELTA(cpu_glyphs),
             (unsigned long)DELTA(glyph_cache_new), (unsigned long)DELTA(glyph_cache_hits),
-            MS(handler_cycles), MS(convert_cycles), MS(gpu_wait_cycles), MS(panel_wait_cycles),
-            (unsigned long)DELTA(convert_gpu), (unsigned long)DELTA(convert_cpu),
+            MS(handler_cycles), MS(stage_cycles), MS(gpu_wait_cycles), MS(panel_wait_cycles),
+            (unsigned long)DELTA(stage_gpu), (unsigned long)DELTA(stage_cpu),
             MS(te_wait_cycles), MS(panel_dma_cycles), MS(frame_copy_cycles),
             (unsigned long)DELTA(panel_gap1), (unsigned long)DELTA(panel_gap2),
             (unsigned long)DELTA(panel_gap3p), (unsigned long)c->completed_hw_id, (unsigned)WATCH_NATIVE_RGB565,

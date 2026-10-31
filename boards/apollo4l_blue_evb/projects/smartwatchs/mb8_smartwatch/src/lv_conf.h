@@ -25,13 +25,12 @@
 
 /*Color depth: 1 (1 byte per pixel), 8 (RGB332), 16 (RGB565), 32 (ARGB8888)*/
 #ifndef WATCH_NATIVE_RGB565
-#define WATCH_NATIVE_RGB565 0
+#define WATCH_NATIVE_RGB565 1
 #endif
-#if WATCH_NATIVE_RGB565
+#if WATCH_NATIVE_RGB565 != 1
+#error "Main uses native RGB565; the old reference is in Git history"
+#endif
 #define LV_COLOR_DEPTH 16
-#else
-#define LV_COLOR_DEPTH 32
-#endif
 
 /*Swap the 2 bytes of RGB565 color. Useful if the display has an 8-bit interface (e.g. SPI)*/
 #define LV_COLOR_16_SWAP 0
@@ -54,13 +53,11 @@
 
 /*1: use custom malloc/free, 0: use the built-in `lv_mem_alloc()` and `lv_mem_free()`*/
 #define LV_MEM_CUSTOM 0
-/* These pools are exclusively reserved in gcc/linker_script.ld. */
-#define LV_MEM_TCM_ADR 0x10040000UL
-#define LV_MEM_TCM_SIZE (128UL * 1024UL)
-#define LV_MEM_SSRAM_ADR 0x100e0000UL
-#define LV_MEM_SSRAM_SIZE (512UL * 1024UL)
-/* No PSRAM is initialized on this watch. Project-local lv_mem.c redirects
- * external allocation requests to the existing SSRAM pool. */
+/* Actual application pool ranges come from the linker after static data.
+ * These are hardware size ceilings for TLSF indexing, NOT extra reservations.
+ * libc, LVGL and Nema share capacity; no graphics buffers grow with the heap. */
+#define LV_MEM_TCM_SIZE (384UL * 1024UL)
+#define LV_MEM_SSRAM_SIZE (1024UL * 1024UL)
 #define LV_MEM_PSRAM_ADR 0
 #define LV_MEM_PSRAM_SIZE 0
 #define LV_USE_GPU_AMBIQ_NEMA 1
@@ -179,7 +176,7 @@
  *-----------*/
 
 /*Use TSi's (aka Think Silicon) acceleration library NemaGFX */
-#define LV_USE_NEMA_GFX 0
+/* This SDK fork uses LV_USE_GPU_AMBIQ_NEMA above, not LV_USE_NEMA_GFX. */
 
 /*Use Arm's 2D acceleration library Arm-2D */
 #define LV_USE_GPU_ARM2D 0

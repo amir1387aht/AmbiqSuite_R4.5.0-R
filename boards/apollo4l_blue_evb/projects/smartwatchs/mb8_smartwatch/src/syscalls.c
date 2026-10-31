@@ -1,15 +1,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stddef.h>
 #include "am_util.h"
 
-extern int __heap_start__;
-extern int __heap_end__;
-static char* heap_end = (char*)&__heap_start__;
-
+/* libc malloc is backed by app_memory, not a second sbrk arena. */
 int _write(int file, char *ptr, int len) {
-    am_util_stdio_printf(ptr);
-    return len;
+    (void)file;
+    if (!ptr || len < 0) { errno = EINVAL; return -1; }
+    /* Write exactly len bytes; never use user text as a printf format. */
+    extern int uart_write_bytes(const char *, size_t);
+    return uart_write_bytes(ptr, (size_t)len);
 }
 
 int _read(int file, char *ptr, int len) {
@@ -17,14 +18,10 @@ int _read(int file, char *ptr, int len) {
     return -1;
 }
 
-int _sbrk(int incr) {
-    char *prev_heap = heap_end;
-    if ((heap_end + incr) > (char*)&__heap_end__) {
-        errno = ENOMEM;
-        return -1;
-    }
-    heap_end += incr;
-    return (int)prev_heap;
+void *_sbrk(ptrdiff_t incr) {
+    (void)incr;
+    errno = ENOMEM;
+    return (void *)-1;
 }
 
 int _close(int file) { return -1; }

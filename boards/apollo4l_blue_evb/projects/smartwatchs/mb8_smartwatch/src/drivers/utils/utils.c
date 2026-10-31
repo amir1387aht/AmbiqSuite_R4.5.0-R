@@ -23,14 +23,7 @@ const am_hal_pwrctrl_sram_memcfg_t i_DefaultSRAMCfg =
 
 void mcu_init(void* pvParameters)
 {
-    am_hal_cachectrl_config(&am_hal_cachectrl_defaults);
-    am_hal_cachectrl_enable();
-
-    am_hal_pwrctrl_mcu_memory_config((am_hal_pwrctrl_mcu_memory_config_t *)&i_DefaultMcuMemCfg);
-    am_hal_pwrctrl_sram_config((am_hal_pwrctrl_sram_memcfg_t *)&i_DefaultSRAMCfg);
-
-    am_bsp_external_pwr_on();
-    am_bsp_low_power_init();
+    /* RAM was powered and application heaps initialized in main(). */
 
     configure_power_mode(true);
     config_mcu_essential_pins();

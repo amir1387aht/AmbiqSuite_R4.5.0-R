@@ -1,594 +1,69 @@
-/**
- * @file lv_mem.c
- * General and portable implementation of malloc and free.
- * The dynamic memory monitoring is also supported.
- */
-
-/*********************
- *      INCLUDES
- *********************/
+/* LVGL allocation adapters. The application owns the TLSF pools; lv_init and
+ * lv_deinit must never reset heaps containing libc/application/GPU objects. */
 #include "lv_mem.h"
-#include "lv_tlsf.h"
 #include "lv_gc.h"
 #include "lv_assert.h"
 #include "lv_log.h"
-#include "am_mcu_apollo.h"
-
-#if LV_MEM_CUSTOM != 0
-    #include LV_MEM_CUSTOM_INCLUDE
-#endif
-
-#ifdef LV_MEM_POOL_INCLUDE
-    #include LV_MEM_POOL_INCLUDE
-#endif
-
-/*********************
- *      DEFINES
- *********************/
-/*memset the allocated memories to 0xaa and freed memories to 0xbb (just for testing purposes)*/
-#ifndef LV_MEM_ADD_JUNK
-    #define LV_MEM_ADD_JUNK  0
-#endif
-
-#ifdef LV_ARCH_64
-    #define MEM_UNIT         uint64_t
-    #define ALIGN_MASK       0x7
-#else
-    #define MEM_UNIT         uint32_t
-    #define ALIGN_MASK       0x3
-#endif
-
-#define ZERO_MEM_SENTINEL  0xa1b2c3d4
-
-/**********************
- *      TYPEDEFS
- **********************/
-
-/**********************
- *  STATIC PROTOTYPES
- **********************/
-#if LV_MEM_CUSTOM == 0
-    static void lv_mem_walker(void * ptr, size_t size, int used, void * user);
-#endif
-
-/**********************
- *  STATIC VARIABLES
- **********************/
-#if LV_MEM_CUSTOM == 0
-    static lv_tlsf_t tlsf_tcm;
-    static lv_tlsf_t tlsf_ssram;
-    static lv_tlsf_t tlsf_psram;
-#endif
-
-static uint32_t zero_mem = ZERO_MEM_SENTINEL; /*Give the address of this variable if 0 byte should be allocated*/
-
-/**********************
- *      MACROS
- **********************/
+#include "app_memory.h"
+#include <stdint.h>
+#define ZERO_MEM_SENTINEL 0xa1b2c3d4u
+static uint32_t zero_mem = ZERO_MEM_SENTINEL;
 #if LV_LOG_TRACE_MEM
-    #define MEM_TRACE(...) LV_LOG_TRACE(__VA_ARGS__)
+#define MEM_TRACE(...) LV_LOG_TRACE(__VA_ARGS__)
 #else
-    #define MEM_TRACE(...)
+#define MEM_TRACE(...)
 #endif
-
+#ifdef LV_ARCH_64
+#define ALIGN_MASK 0x7
+#else
+#define ALIGN_MASK 0x3
+#endif
 #define COPY32 *d32 = *s32; d32++; s32++;
 #define COPY8 *d8 = *s8; d8++; s8++;
 #define SET32(x) *d32 = x; d32++;
 #define SET8(x) *d8 = x; d8++;
 #define REPEAT8(expr) expr expr expr expr expr expr expr expr
 
-/**********************
- *   GLOBAL FUNCTIONS
- **********************/
-
-/**
- * Initialize the dyn_mem module (work memory and other variables)
- */
 void lv_mem_init(void)
 {
-#if LV_MEM_CUSTOM == 0
-
-#if ( LV_MEM_TCM_ADR == 0 ) || ( !defined(LV_MEM_TCM_SIZE) )
-#error "Must specify TCM heap memory address and size"
-#else
-    tlsf_tcm = lv_tlsf_create_with_pool((void *)LV_MEM_TCM_ADR, LV_MEM_TCM_SIZE);
-#endif
-
-#if ( LV_MEM_SSRAM_ADR == 0 ) || ( !defined(LV_MEM_SSRAM_SIZE) )
-#error "Must specify SSRAM heap memory address and size"
-#else
-    tlsf_ssram = lv_tlsf_create_with_pool((void *)LV_MEM_SSRAM_ADR, LV_MEM_SSRAM_SIZE);
-#endif
-
-#if LV_MEM_PSRAM_ADR != 0 && LV_MEM_PSRAM_SIZE > 0
-    tlsf_psram = lv_tlsf_create_with_pool((void *)LV_MEM_PSRAM_ADR, LV_MEM_PSRAM_SIZE);
-#endif
-
-#endif
-
-    for(uint8_t i = 0; i < LV_MEM_BUF_MAX_NUM; i++) {
+    app_memory_init(); /* Idempotent; main already powered and initialized RAM. */
+    for (uint8_t i = 0; i < LV_MEM_BUF_MAX_NUM; ++i) {
         LV_GC_ROOT(lv_mem_buf[i]).p = NULL;
         LV_GC_ROOT(lv_mem_buf[i]).size = 0;
         LV_GC_ROOT(lv_mem_buf[i]).used = 0;
     }
-
-#if LV_MEM_ADD_JUNK
-    LV_LOG_WARN("LV_MEM_ADD_JUNK is enabled which makes LVGL much slower");
-#endif
 }
-
-/**
- * Clean up the memory buffer which frees all the allocated memories.
- * @note It work only if `LV_MEM_CUSTOM == 0`
- */
-void lv_mem_deinit(void)
+void lv_mem_deinit(void) { lv_mem_buf_free_all(); }
+void *lv_mem_alloc(size_t n) { return n ? app_malloc(n) : &zero_mem; }
+void *lv_mem_ssram_alloc(size_t n) { return n ? app_malloc_shared(n) : &zero_mem; }
+void *lv_mem_external_alloc(size_t n) { return lv_mem_ssram_alloc(n); } /* No PSRAM. */
+void lv_mem_free(void *p) { if (p != &zero_mem) app_free(p); }
+void *lv_mem_realloc(void *p, size_t n)
 {
-#if LV_MEM_CUSTOM == 0
-    lv_tlsf_destroy(tlsf_tcm);
-    lv_tlsf_destroy(tlsf_ssram);
-    if(tlsf_psram) lv_tlsf_destroy(tlsf_psram);
-    lv_mem_init();
-#endif
+    if (!n) { lv_mem_free(p); return &zero_mem; }
+    return app_realloc(p == &zero_mem ? NULL : p, n);
 }
-
-/**
- * Allocate a memory dynamically
- * @param size size of the memory to allocate in bytes
- * @return pointer to the allocated memory
- */
-void * lv_mem_alloc(size_t size)
-{
-    MEM_TRACE("allocating %lu bytes", (unsigned long)size);
-    if(size == 0) {
-        MEM_TRACE("using zero_mem");
-        return &zero_mem;
-    }
-
-    //Firstly, try TCM
-#if LV_MEM_CUSTOM == 0
-    void * alloc = lv_tlsf_malloc(tlsf_tcm, size);
-#else
-    void * alloc = LV_MEM_CUSTOM_TCM_ALLOC(size);
-#endif
-
-#ifdef EXPAND_TO_SSRAM 
-    // If TCM is used up, try SSRAM
-    if(alloc == NULL)
-    {
-#if LV_MEM_CUSTOM == 0
-        alloc = lv_tlsf_malloc(tlsf_ssram, size);
-#else
-        alloc = LV_MEM_CUSTOM_SSRAM_ALLOC(size);
-#endif
-    }
-
-    // If SSRAM used up, no need to try PSRAM, it's too slow to satisfy application request.
-#endif
-
-    if(alloc == NULL) {
-        LV_LOG_ERROR("couldn't allocate memory (%lu bytes)", (unsigned long)size);
-        lv_mem_monitor_t mon;
-        lv_mem_monitor(&mon);
-        LV_LOG_ERROR("used: %6d (%3d %%), frag: %3d %%, biggest free: %6d",
-                     (int)(mon.total_size - mon.free_size), mon.used_pct, mon.frag_pct,
-                     (int)mon.free_biggest_size);
-    }
-#if LV_MEM_ADD_JUNK
-    else {
-        lv_memset(alloc, 0xaa, size);
-    }
-#endif
-
-    MEM_TRACE("allocated at %p", alloc);
-    return alloc;
-}
-
-/**
- * Allocate a memory dynamically in SSRAM
- * @param size size of the memory to allocate in bytes
- * @return pointer to the allocated memory
- */
-void * lv_mem_ssram_alloc(size_t size)
-{
-    MEM_TRACE("allocating %lu bytes in ssram", (unsigned long)size);
-    if(size == 0) {
-        MEM_TRACE("using zero_mem");
-        return &zero_mem;
-    }
-
-    //Alloc buffer from SSRAM
-#if LV_MEM_CUSTOM == 0
-    #if defined(AM_PART_APOLLO5A) || defined(AM_PART_APOLLO5B)
-        void * alloc = lv_tlsf_memalign(tlsf_ssram, 32, size);
-    #else
-        void * alloc = lv_tlsf_memalign(tlsf_ssram, 8, size);
-    #endif
-#else
-    void * alloc = LV_MEM_CUSTOM_SSRAM_ALLOC(size);
-#endif
-
-    if(alloc == NULL) {
-        LV_LOG_ERROR("couldn't allocate memory (%lu bytes)", (unsigned long)size);
-        lv_mem_monitor_t mon;
-        lv_mem_ssram_monitor(&mon);
-        LV_LOG_ERROR("used: %6d (%3d %%), frag: %3d %%, biggest free: %6d",
-                     (int)(mon.total_size - mon.free_size), mon.used_pct, mon.frag_pct,
-                     (int)mon.free_biggest_size);
-    }
-#if LV_MEM_ADD_JUNK
-    else {
-        lv_memset(alloc, 0xaa, size);
-    }
-#endif
-
-    MEM_TRACE("allocated at %p", alloc);
-    return alloc;
-}
-
-/**
- * Allocate a memory dynamically in PSRAM
- * @param size size of the memory to allocate in bytes
- * @return pointer to the allocated memory
- */
-void * lv_mem_external_alloc(size_t size)
-{
-#if LV_MEM_PSRAM_ADR == 0
-    /* Same SSRAM allocator: free/realloc retain the correct pool identity. */
-    return lv_mem_ssram_alloc(size);
-#else
-    MEM_TRACE("allocating %lu bytes in psram", (unsigned long)size);
-    if(size == 0) {
-        MEM_TRACE("using zero_mem");
-        return &zero_mem;
-    }
-
-    //Alloc memory from PSRAM
-#if LV_MEM_CUSTOM == 0
-
-    #if defined(AM_PART_APOLLO5A) || defined(AM_PART_APOLLO5B)
-        void * alloc = lv_tlsf_memalign(tlsf_psram, 32, size);
-    #else
-        void * alloc = lv_tlsf_memalign(tlsf_psram, 8, size);
-    #endif
-
-#else
-    void * alloc = LV_MEM_CUSTOM_PSRAM_ALLOC(size);
-#endif
-
-    if(alloc == NULL) {
-        LV_LOG_ERROR("couldn't allocate memory (%lu bytes)", (unsigned long)size);
-        lv_mem_monitor_t mon;
-        lv_mem_external_monitor(&mon);
-        LV_LOG_ERROR("used: %6d (%3d %%), frag: %3d %%, biggest free: %6d",
-                     (int)(mon.total_size - mon.free_size), mon.used_pct, mon.frag_pct,
-                     (int)mon.free_biggest_size);
-    }
-#if LV_MEM_ADD_JUNK
-    else {
-        lv_memset(alloc, 0xaa, size);
-    }
-#endif
-
-    MEM_TRACE("allocated at %p", alloc);
-    return alloc;
-#endif
-}
-
-/**
- * Free an allocated data
- * @param data pointer to an allocated memory
- */
-void lv_mem_free(void * data)
-{
-    MEM_TRACE("freeing %p", data);
-    if(data == &zero_mem) return;
-    if(data == NULL) return;
-
-#if LV_MEM_CUSTOM == 0
-#  if LV_MEM_ADD_JUNK
-    lv_memset(data, 0xbb, lv_tlsf_block_size(data));
-#  endif
-#endif
-
-    uint32_t data_u32 = (uint32_t)data;
-#if defined(AM_PART_APOLLO5A) || defined(AM_PART_APOLLO5B)
-    if( ( data_u32 >= DTCM_BASEADDR ) && ( data_u32 <= (DTCM_BASEADDR + DTCM_MAX_SIZE) ) )
-#else
-    if( ( data_u32 >= SRAM_BASEADDR ) && ( data_u32 <= (SRAM_BASEADDR + TCM_MAX_SIZE) ) )
-#endif
-    {
-#if LV_MEM_CUSTOM == 0
-        lv_tlsf_free(tlsf_tcm, data);
-#else
-        LV_MEM_CUSTOM_TCM_FREE(data);
-#endif
-    }
-#if defined(AM_PART_APOLLO5A)  || defined(AM_PART_APOLLO5B)
-    else if( ( data_u32 >= SSRAM_BASEADDR ) && ( data_u32 <= (SSRAM_BASEADDR + SSRAM_MAX_SIZE) ) )
-#else
-    else if( ( data_u32 >= SSRAM0_BASEADDR ) && ( data_u32 <= (SSRAM0_BASEADDR + NONTCM_MAX_SIZE) ) )
-#endif
-    {
-#if LV_MEM_CUSTOM == 0
-        lv_tlsf_free(tlsf_ssram, data);
-#else
-        LV_MEM_CUSTOM_SSRAM_FREE(data);
-#endif
-    }
-    else if( ( data_u32 >= MSPI0_APERTURE_START_ADDR ) && ( data_u32 <= MSPI2_APERTURE_END_ADDR ) )
-    {
-#if LV_MEM_CUSTOM == 0
-        lv_tlsf_free(tlsf_psram, data);
-#else
-        LV_MEM_CUSTOM_SSRAM_FREE(data);
-#endif
-    }
-    else
-    {
-        LV_LOG_ERROR("couldn't locate corresponding heap!");
-    }
-}
-
-/**
- * Reallocate a memory with a new size. The old content will be kept.
- * @param data pointer to an allocated memory.
- * Its content will be copied to the new memory block and freed
- * @param new_size the desired new size in byte
- * @return pointer to the new memory
- */
-void * lv_mem_realloc(void * data_p, size_t new_size)
-{
-    MEM_TRACE("reallocating %p with %lu size", data_p, (unsigned long)new_size);
-    if(new_size == 0) {
-        MEM_TRACE("using zero_mem");
-        lv_mem_free(data_p);
-        return &zero_mem;
-    }
-
-    if((data_p == &zero_mem) || (data_p == NULL)) return lv_mem_alloc(new_size);
-
-    uint32_t data_u32 = (uint32_t)data_p;
-    void * new_p = NULL;
-#if defined(AM_PART_APOLLO5A)  || defined(AM_PART_APOLLO5B)
-    if( ( data_u32 >= DTCM_BASEADDR ) && ( data_u32 <= (DTCM_BASEADDR + DTCM_MAX_SIZE) ) )
-#else
-    if( ( data_u32 >= SRAM_BASEADDR ) && ( data_u32 <= (SRAM_BASEADDR + TCM_MAX_SIZE) ) )
-#endif
-    {
-#if LV_MEM_CUSTOM == 0
-        new_p = lv_tlsf_realloc(tlsf_tcm, data_p, new_size);
-#else
-        new_p = LV_MEM_CUSTOM_TCM_REALLOC(data_p, new_size);
-#endif
-    }
-#if defined(AM_PART_APOLLO5A)  || defined(AM_PART_APOLLO5B)
-    else if ( ( data_u32 >= SSRAM_BASEADDR ) && ( data_u32 <= (SSRAM_BASEADDR + SSRAM_MAX_SIZE) ) )
-#else
-    else if ( ( data_u32 >= SSRAM0_BASEADDR ) && ( data_u32 <= (SSRAM0_BASEADDR + NONTCM_MAX_SIZE) ) )
-#endif
-    {
-#if LV_MEM_CUSTOM == 0
-        new_p = lv_tlsf_realloc(tlsf_ssram, data_p, new_size);
-#else
-        new_p = LV_MEM_CUSTOM_SSRAM_REALLOC(data_p, new_size);
-#endif
-    }
-    else if( ( data_u32 >= MSPI0_APERTURE_START_ADDR ) && ( data_u32 <= MSPI2_APERTURE_END_ADDR ) )
-    {
-#if LV_MEM_CUSTOM == 0
-        new_p = lv_tlsf_realloc(tlsf_psram, data_p, new_size);
-#else
-        new_p = LV_MEM_CUSTOM_PSRAM_REALLOC(data_p, new_size);
-#endif
-    }
-    else
-    {
-        LV_UNUSED(new_p);
-        LV_LOG_ERROR("couldn't locate corresponding heap!");
-    }
-
-    if(new_p == NULL) {
-        LV_LOG_ERROR("couldn't allocate memory");
-        return NULL;
-    }
-
-    MEM_TRACE("allocated at %p", new_p);
-    return new_p;
-}
-
 lv_res_t lv_mem_test(void)
+{ return zero_mem == ZERO_MEM_SENTINEL && app_memory_check() ? LV_RES_OK : LV_RES_INV; }
+static void monitor(lv_mem_monitor_t *m, bool shared_only)
 {
-    if(zero_mem != ZERO_MEM_SENTINEL) {
-        LV_LOG_WARN("zero_mem is written");
-        return LV_RES_INV;
-    }
-
-#if LV_MEM_CUSTOM == 0
-    if(lv_tlsf_check(tlsf_tcm)) {
-        LV_LOG_WARN("tcm heap failed");
-        return LV_RES_INV;
-    }
-
-    if(lv_tlsf_check(tlsf_ssram)) {
-        LV_LOG_WARN("ssram heap failed");
-        return LV_RES_INV;
-    }
-
-    if(tlsf_psram && lv_tlsf_check(tlsf_psram)) {
-        LV_LOG_WARN("psram heap failed");
-        return LV_RES_INV;
-    }
-
-    if(lv_tlsf_check_pool(lv_tlsf_get_pool(tlsf_tcm))) {
-        LV_LOG_WARN("tcm pool failed");
-        return LV_RES_INV;
-    }
-
-    if(lv_tlsf_check_pool(lv_tlsf_get_pool(tlsf_ssram))) {
-        LV_LOG_WARN("ssram pool failed");
-        return LV_RES_INV;
-    }
-
-    if(tlsf_psram && lv_tlsf_check_pool(lv_tlsf_get_pool(tlsf_psram))) {
-        LV_LOG_WARN("psram pool failed");
-        return LV_RES_INV;
-    }
-#endif
-    MEM_TRACE("passed");
-    return LV_RES_OK;
+    app_memory_pool_stats_t cpu, shared;
+    app_memory_stats(&cpu, &shared);
+    lv_memset_00(m, sizeof(*m));
+    m->total_size = shared.total + (shared_only ? 0 : cpu.total);
+    m->free_size = shared.free + (shared_only ? 0 : cpu.free);
+    m->free_biggest_size = shared.largest;
+    if (!shared_only && cpu.largest > m->free_biggest_size) m->free_biggest_size = cpu.largest;
+    m->free_cnt = shared.free_blocks + (shared_only ? 0 : cpu.free_blocks);
+    m->used_cnt = shared.used_blocks + (shared_only ? 0 : cpu.used_blocks);
+    m->used_pct = 100 - 100u * m->free_size / m->total_size;
+    m->frag_pct = m->free_size ? 100 - 100u * m->free_biggest_size / m->free_size : 0;
 }
-
-/**
- * Give information about the work memory of dynamic allocation
- * @param mon_p pointer to a lv_mem_monitor_t variable,
- *              the result of the analysis will be stored here
- */
-void lv_mem_monitor(lv_mem_monitor_t * mon_p)
-{
-    /*Init the data*/
-    lv_memset(mon_p, 0, sizeof(lv_mem_monitor_t));
-#if LV_MEM_CUSTOM == 0
-    MEM_TRACE("begin");
-
-#ifdef EXPAND_TO_SSRAM
-    lv_tlsf_walk_pool(lv_tlsf_get_pool(tlsf_tcm),   lv_mem_walker, mon_p);
-    lv_tlsf_walk_pool(lv_tlsf_get_pool(tlsf_ssram), lv_mem_walker, mon_p);
-
-    mon_p->total_size = LV_MEM_TCM_SIZE + LV_MEM_SSRAM_SIZE;
-#else
-    lv_tlsf_walk_pool(lv_tlsf_get_pool(tlsf_tcm),   lv_mem_walker, mon_p);
-
-    mon_p->total_size = LV_MEM_TCM_SIZE;
-#endif
-
-    mon_p->used_pct = 100 - (100U * mon_p->free_size) / mon_p->total_size;
-    if(mon_p->free_size > 0) {
-        mon_p->frag_pct = mon_p->free_biggest_size * 100U / mon_p->free_size;
-        mon_p->frag_pct = 100 - mon_p->frag_pct;
-    }
-    else {
-        mon_p->frag_pct = 0; /*no fragmentation if all the RAM is used*/
-    }
-
-    MEM_TRACE("finished");
-#endif
-}
-
-/**
- * Give information about the work memory of dynamic allocation
- * @param mon_p pointer to a lv_mem_monitor_t variable,
- *              the result of the analysis will be stored here
- */
-void lv_mem_ssram_monitor(lv_mem_monitor_t * mon_p)
-{
-    /*Init the data*/
-    lv_memset(mon_p, 0, sizeof(lv_mem_monitor_t));
-#if LV_MEM_CUSTOM == 0
-    MEM_TRACE("begin");
-
-    lv_tlsf_walk_pool(lv_tlsf_get_pool(tlsf_ssram),   lv_mem_walker, mon_p);
-
-    mon_p->total_size = LV_MEM_SSRAM_SIZE;
-    mon_p->used_pct = 100 - (100U * mon_p->free_size) / mon_p->total_size;
-    if(mon_p->free_size > 0) {
-        mon_p->frag_pct = mon_p->free_biggest_size * 100U / mon_p->free_size;
-        mon_p->frag_pct = 100 - mon_p->frag_pct;
-    }
-    else {
-        mon_p->frag_pct = 0; /*no fragmentation if all the RAM is used*/
-    }
-
-    MEM_TRACE("finished");
-#endif
-}
-
-/**
- * Give information about the work memory of dynamic allocation
- * @param mon_p pointer to a lv_mem_monitor_t variable,
- *              the result of the analysis will be stored here
- */
-void lv_mem_external_monitor(lv_mem_monitor_t * mon_p)
-{
-#if LV_MEM_PSRAM_ADR == 0
-    lv_mem_ssram_monitor(mon_p);
-    return;
-#else
-    /*Init the data*/
-    lv_memset(mon_p, 0, sizeof(lv_mem_monitor_t));
-#if LV_MEM_CUSTOM == 0
-    MEM_TRACE("begin");
-
-    lv_tlsf_walk_pool(lv_tlsf_get_pool(tlsf_psram),   lv_mem_walker, mon_p);
-
-    mon_p->total_size = LV_MEM_PSRAM_SIZE;
-    mon_p->used_pct = 100 - (100U * mon_p->free_size) / mon_p->total_size;
-    if(mon_p->free_size > 0) {
-        mon_p->frag_pct = mon_p->free_biggest_size * 100U / mon_p->free_size;
-        mon_p->frag_pct = 100 - mon_p->frag_pct;
-    }
-    else {
-        mon_p->frag_pct = 0; /*no fragmentation if all the RAM is used*/
-    }
-
-    MEM_TRACE("finished");
-#endif
-#endif
-}
-
-/**
- * Allocate a buf for font glyph
- * @param size size of the font glyph
- * @return pointer to the allocated memory
- * @note if the size is less than 4K bytes, this API will first try to allocate
- * the buffer by lv_mem_ssram_alloc API, if it is bigger than 4K or lv_mem_ssram_alloc failed, it will
- * try allocate buffer by lv_mem_external_alloc API.
- */
-void* lv_mem_font_glyph_alloc(uint32_t size)
-{
-    void* buf_ptr = NULL;
-
-    //If glyph_size_byte is less than 4K, try to alloc the glyph buffer from SSRAM
-    if(size <= 4*1024)
-    {
-        buf_ptr = (uint8_t *)lv_mem_ssram_alloc(size);
-    }
-
-    //If glyph_size_byte is bigger than 4K or SSRAM malloc failed, try to alloc it from PSRAM
-    if(buf_ptr == NULL)
-    {
-        buf_ptr = (uint8_t *)lv_mem_external_alloc(size);
-    }
-
-    return buf_ptr;
-}
-
-/**
- * Allocate a buf for font info
- * @param size size of the font glyph
- * @return pointer to the allocated memory
- * @note if the size is less than 4K bytes, this API will first try to allocate
- * the buffer by lv_mem_alloc API, if it is bigger than 4K or lv_mem_alloc failed, it will
- * try allocate buffer by lv_mem_external_alloc API.
- */
-void* lv_mem_font_info_alloc(uint32_t size)
-{
-    void* buf_ptr = NULL;
-
-    //If glyph_size_byte is less than 4K, try to alloc the glyph buffer from TCM or SSRAM.
-    if(size <= 4*1024)
-    {
-        buf_ptr = (uint8_t *)lv_mem_alloc(size);
-    }
-
-    //If glyph_size_byte is bigger than 4K or SSRAM malloc failed, try to alloc it from PSRAM
-    if(buf_ptr == NULL)
-    {
-        buf_ptr = (uint8_t *)lv_mem_external_alloc(size);
-    }
-
-    return buf_ptr;
-}
-
+void lv_mem_monitor(lv_mem_monitor_t *m) { monitor(m, false); }
+void lv_mem_ssram_monitor(lv_mem_monitor_t *m) { monitor(m, true); }
+void lv_mem_external_monitor(lv_mem_monitor_t *m) { monitor(m, true); }
+void *lv_mem_font_glyph_alloc(uint32_t n) { return lv_mem_ssram_alloc(n); }
+void *lv_mem_font_info_alloc(uint32_t n) { return lv_mem_alloc(n); }
 
 /**
  * Get a temporal buffer with the given size.
@@ -863,25 +338,3 @@ LV_ATTRIBUTE_FAST_MEM void lv_memset_ff(void * dst, size_t len)
 }
 
 #endif /*LV_MEMCPY_MEMSET_STD*/
-
-/**********************
- *   STATIC FUNCTIONS
- **********************/
-
-#if LV_MEM_CUSTOM == 0
-static void lv_mem_walker(void * ptr, size_t size, int used, void * user)
-{
-    LV_UNUSED(ptr);
-
-    lv_mem_monitor_t * mon_p = user;
-    if(used) {
-        mon_p->used_cnt++;
-    }
-    else {
-        mon_p->free_cnt++;
-        mon_p->free_size += size;
-        if(size > mon_p->free_biggest_size)
-            mon_p->free_biggest_size = size;
-    }
-}
-#endif

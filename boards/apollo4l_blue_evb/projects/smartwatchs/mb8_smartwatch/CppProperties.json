@@ -10,8 +10,7 @@
       ],
       "defines": [
         "AM_PART_APOLLO4L",
-        "LV_CONF_INCLUDE_SIMPLE",
-        "WATCH_NATIVE_RGB565=1"
+        "LV_CONF_INCLUDE_SIMPLE"
       ]
     }
   ]

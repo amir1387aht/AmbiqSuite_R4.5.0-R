@@ -2,10 +2,8 @@
 ENTRY(Reset_Handler)
 MEMORY {
     MCU_MRAM (rx) : ORIGIN = 0x00018000, LENGTH = 1998848
-    MCU_TCM (rwx) : ORIGIN = 0x10000000, LENGTH = 256K
-    LVGL_TCM (rw) : ORIGIN = 0x10040000, LENGTH = 128K
-    SHARED_SRAM (rwx) : ORIGIN = 0x10060000, LENGTH = 512K
-    LVGL_SSRAM (rw) : ORIGIN = 0x100e0000, LENGTH = 512K
+    MCU_TCM (rwx) : ORIGIN = 0x10000000, LENGTH = 384K
+    SHARED_SRAM (rwx) : ORIGIN = 0x10060000, LENGTH = 1024K
 }
 SECTIONS {
     .text : {
@@ -29,12 +27,6 @@ SECTIONS {
         KEEP(*(.stack*))
         . = ALIGN(8); __stack_end__ = .;
     } > SHARED_SRAM
-    .heap (NOLOAD) : {
-        . = ALIGN(8); __heap_start__ = .;
-        KEEP(*(.heap*))
-        . = __heap_start__ + 16K;
-        __heap_end__ = .;
-    } > SHARED_SRAM
     .bss (NOLOAD) : {
         . = ALIGN(8); _sbss = .;
         *(.bss*) *(COMMON) KEEP(*(.shared*))
@@ -49,21 +41,26 @@ SECTIONS {
         *(.display_buffer*) . = ALIGN(32); __display_buffers_end__ = .;
     } > SHARED_SRAM
     __shared_static_end__ = .;
-    .lvgl_tcm (NOLOAD) : {
-        __lvgl_tcm_start__ = .; . += LENGTH(LVGL_TCM); __lvgl_tcm_end__ = .;
-    } > LVGL_TCM
-    .lvgl_ssram (NOLOAD) : {
-        __lvgl_ssram_start__ = .; . += LENGTH(LVGL_SSRAM); __lvgl_ssram_end__ = .;
-    } > LVGL_SSRAM
+    /* All RAM after static data belongs to the application, not to a
+     * graphics-private reservation. Includes TLSF's control/block overhead. */
+    .app_cpu_heap (NOLOAD) : {
+        . = ALIGN(8); __app_cpu_heap_start__ = .;
+        . = ORIGIN(MCU_TCM) + LENGTH(MCU_TCM); __app_cpu_heap_end__ = .;
+    } > MCU_TCM
+    .app_shared_heap (NOLOAD) : {
+        . = ALIGN(32); __app_shared_heap_start__ = .;
+        . = ORIGIN(SHARED_SRAM) + LENGTH(SHARED_SRAM); __app_shared_heap_end__ = .;
+    } > SHARED_SRAM
     .ARM.attributes 0 : { *(.ARM.attributes) }
 }
-ASSERT(__lvgl_tcm_start__ == 0x10040000, "LVGL TCM config mismatch")
-ASSERT(__lvgl_ssram_start__ == 0x100e0000, "LVGL SSRAM config mismatch")
-ASSERT(__heap_end__ <= _sbss, "C heap overlaps BSS")
-
 __cpu_ram_start__ = ORIGIN(MCU_TCM);
 __cpu_ram_end__ = ORIGIN(MCU_TCM) + LENGTH(MCU_TCM);
 __shared_ram_start__ = ORIGIN(SHARED_SRAM);
 __shared_ram_end__ = ORIGIN(SHARED_SRAM) + LENGTH(SHARED_SRAM);
 ASSERT(__shared_static_end__ <= __shared_ram_end__, "Static shared SRAM overflow")
 ASSERT(_edata <= __cpu_ram_end__, "CPU TCM overflow")
+
+ASSERT(_edata <= __app_cpu_heap_start__, "CPU application heap overlaps data")
+ASSERT(__shared_static_end__ <= __app_shared_heap_start__, "Shared application heap overlaps static data")
+ASSERT(__app_cpu_heap_end__ == 0x10060000, "CPU TCM end mismatch")
+ASSERT(__app_shared_heap_end__ == 0x10160000, "Shared SRAM end mismatch")

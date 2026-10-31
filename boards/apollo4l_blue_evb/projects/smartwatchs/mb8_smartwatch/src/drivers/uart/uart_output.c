@@ -3,6 +3,9 @@
 #include "am_mcu_apollo.h"
 #include "am_bsp.h"
 #include "am_util.h"
+#include <string.h>
+#include <errno.h>
+#include <limits.h>
 
 #if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
 #include "FreeRTOS.h"
@@ -43,51 +46,34 @@ void am_uart_isr(void)
     am_hal_uart_interrupt_service(phUART, ui32Status);
 }
 
-void uart_print(char *pcStr)
+int uart_write_bytes(const char *text, size_t length)
 {
+    if (!length) return 0;
+    if (!text || !phUART || length > INT_MAX) { errno = EINVAL; return -1; }
 #if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
-    /* Fault/ISR diagnostics must not call a blocking RTOS mutex API. */
     bool locked = uart_tx_lock && __get_IPSR() == 0 &&
                   xTaskGetSchedulerState() == taskSCHEDULER_RUNNING;
-    if (locked) xSemaphoreTake(uart_tx_lock, portMAX_DELAY);
+    if (locked && xSemaphoreTake(uart_tx_lock, portMAX_DELAY) != pdTRUE) return -1;
 #endif
-    uint32_t ui32StrLen = 0;
-    uint32_t ui32BytesWritten = 0;
-
-    //
-    // Measure the length of the string.
-    //
-    while (pcStr[ui32StrLen] != 0)
-    {
-        ui32StrLen++;
-    }
-
-    //
-    // Print the string via the UART.
-    //
-    const am_hal_uart_transfer_t sUartWrite =
-        {
-            .eType = AM_HAL_UART_BLOCKING_WRITE,
-            .pui8Data = (uint8_t *)pcStr,
-            .ui32NumBytes = ui32StrLen,
-            .pui32BytesTransferred = &ui32BytesWritten,
-            .ui32TimeoutMs = 100,
-            .pfnCallback = NULL,
-            .pvContext = NULL,
-            .ui32ErrorStatus = 0};
-
-    am_hal_uart_transfer(phUART, &sUartWrite);
-
+    uint32_t written = 0;
+    const am_hal_uart_transfer_t transfer = {
+        .eType = AM_HAL_UART_BLOCKING_WRITE, .pui8Data = (uint8_t *)text,
+        .ui32NumBytes = (uint32_t)length, .pui32BytesTransferred = &written,
+        .ui32TimeoutMs = 100, .pfnCallback = NULL, .pvContext = NULL, .ui32ErrorStatus = 0
+    };
+    uint32_t status = am_hal_uart_transfer(phUART, &transfer);
 #if defined(WATCH_GPU_PROFILE) && WATCH_GPU_PROFILE
     if (locked) xSemaphoreGive(uart_tx_lock);
 #endif
-    if (ui32BytesWritten != ui32StrLen)
-    {
-        //
-        // Couldn't send the whole string!!
-        //
-        while (1)
-            ;
+    if (status != AM_HAL_STATUS_SUCCESS && !written) { errno = EIO; return -1; }
+    return (int)written;
+}
+void uart_print(char *text)
+{
+    size_t length = strlen(text);
+    if (uart_write_bytes(text, length) != (int)length) {
+        /* Retain the existing fail-stop policy for core diagnostic output. */
+        for (;;) {}
     }
 }
 
