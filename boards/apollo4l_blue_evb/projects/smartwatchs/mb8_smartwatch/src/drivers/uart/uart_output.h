@@ -4,7 +4,7 @@
 #include "am_util.h"
 
 #include <stddef.h>
-int uart_write_bytes(const char *text, size_t length);
+int  uart_write_bytes(const char *text, size_t length);
 void uart_init();
 void uart_flush();
 #include <stdbool.h>

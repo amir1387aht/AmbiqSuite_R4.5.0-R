@@ -14,10 +14,10 @@
 #error "This watch build requires the FPS monitor, labels and Nema GPU enabled"
 #endif
 
-volatile bool watch_gpu_ready;
+volatile bool              watch_gpu_ready;
 volatile watch_gpu_stats_t watch_gpu_stats;
-static int32_t first_text_submission = -1;
-static bool text_completion_reported;
+static int32_t             first_text_submission = -1;
+static bool                text_completion_reported;
 
 /* Commit CPU-produced shared pixels before GPU reads or an IRQ invalidates DAXI. */
 void watch_gpu_cpu_write_complete(void)
@@ -29,7 +29,8 @@ void watch_gpu_cpu_write_complete(void)
 void watch_gpu_note_submit(int32_t submission_id, uint32_t glyphs)
 {
     ++watch_gpu_stats.submitted_cl;
-    if (glyphs && first_text_submission < 0) first_text_submission = submission_id;
+    if (glyphs && first_text_submission < 0)
+        first_text_submission = submission_id;
 }
 
 void watch_gpu_note_completed(int32_t submission_id, uint32_t hardware_id)
@@ -37,16 +38,21 @@ void watch_gpu_note_completed(int32_t submission_id, uint32_t hardware_id)
     watch_gpu_stats.completed_hw_id = hardware_id;
     /* Initial IDs only: do not infer long-running ordering across 24-bit wrap. */
     if (!text_completion_reported && first_text_submission >= 0 &&
-        submission_id >= first_text_submission && hardware_id >= (uint32_t)submission_id) {
+        submission_id >= first_text_submission && hardware_id >= (uint32_t)submission_id)
+    {
         text_completion_reported = true;
         am_util_stdio_printf("GPU TEXT completed: submitted=%ld HW_CLID=%lu glyphs=%lu\r\n",
-            (long)submission_id, (unsigned long)hardware_id,
+            (long)submission_id,
+            (unsigned long)hardware_id,
             (unsigned long)watch_gpu_stats.gpu_glyphs);
     }
 }
 
 #if LV_USE_LOG
-static void log_line(const char *s) { am_util_stdio_printf("%s", s); }
+static void log_line(const char *s)
+{
+    am_util_stdio_printf("%s", s);
+}
 #endif
 
 void watch_gpu_init(void)
@@ -58,7 +64,8 @@ void watch_gpu_init(void)
 #endif
     lv_init();
     am_gpu_power_enable(AM_GPU_PWRCTRL_USER);
-    if (nema_get_error() != NEMA_ERR_NO_ERROR || lv_mem_test() != LV_RES_OK) {
+    if (nema_get_error() != NEMA_ERR_NO_ERROR || lv_mem_test() != LV_RES_OK)
+    {
         am_util_stdio_printf("GPU/heap initialization failed.\r\n");
         configASSERT(0);
     }
@@ -70,10 +77,12 @@ void watch_gpu_init(void)
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 #endif
     am_util_stdio_printf("GPU glyph-cache-v1: FPS monitor=%u refresh=%u ms profile=%u\r\n",
-        (unsigned)LV_USE_PERF_MONITOR, (unsigned)LV_DISP_DEF_REFR_PERIOD,
+        (unsigned)LV_USE_PERF_MONITOR,
+        (unsigned)LV_DISP_DEF_REFR_PERIOD,
         (unsigned)WATCH_GPU_PROFILE);
     watch_gpu_profile_init();
     am_util_stdio_printf("GPU IRQ: immediate RTOS wake; profile UART below LVGL.\r\n");
     watch_gpu_ready = true;
-    am_util_stdio_printf("Native RGB565: LVGL16 -> Nema RGB565 -> RGB565 panel; no BGRA conversion.\r\n");
+    am_util_stdio_printf(
+        "Native RGB565: LVGL16 -> Nema RGB565 -> RGB565 panel; no BGRA conversion.\r\n");
 }

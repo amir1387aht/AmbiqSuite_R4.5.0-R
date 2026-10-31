@@ -6,7 +6,8 @@
 #define WATCH_GPU_PROFILE 0
 #endif
 
-typedef struct {
+typedef struct
+{
     uint32_t submitted_cl;
     uint32_t gpu_glyphs;
     uint32_t cpu_glyphs;
@@ -31,19 +32,29 @@ typedef struct {
     uint32_t native_bg_gpu;
     uint32_t native_cpu_fallbacks;
 } watch_gpu_stats_t;
+
 extern volatile watch_gpu_stats_t watch_gpu_stats;
-extern volatile bool watch_gpu_ready;
-void watch_gpu_note_submit(int32_t submission_id, uint32_t glyphs);
+extern volatile bool              watch_gpu_ready;
+void                              watch_gpu_note_submit(int32_t submission_id, uint32_t glyphs);
 void watch_gpu_note_completed(int32_t submission_id, uint32_t hardware_id);
 void watch_gpu_profile_poll(void);
 void watch_gpu_profile_init(void);
 void watch_gpu_cpu_write_complete(void);
 #if WATCH_GPU_PROFILE
 #include "am_mcu_apollo.h"
-static inline uint32_t watch_profile_start(void) { return DWT->CYCCNT; }
+
+static inline uint32_t watch_profile_start(void)
+{
+    return DWT->CYCCNT;
+}
+
 #define WATCH_PROFILE_ADD(field, start) (watch_gpu_stats.field += DWT->CYCCNT - (start))
 #else
-static inline uint32_t watch_profile_start(void) { return 0; }
+static inline uint32_t watch_profile_start(void)
+{
+    return 0;
+}
+
 #define WATCH_PROFILE_ADD(field, start) ((void)(start))
 #endif
 void watch_gpu_init(void);

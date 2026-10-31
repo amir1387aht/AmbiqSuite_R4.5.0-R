@@ -14,11 +14,11 @@
 #define delay(...) am_util_delay_ms(__VA_ARGS__)
 
 extern const am_hal_pwrctrl_mcu_memory_config_t i_DefaultMcuMemCfg;
-extern const am_hal_pwrctrl_sram_memcfg_t i_DefaultSRAMCfg;
+extern const am_hal_pwrctrl_sram_memcfg_t       i_DefaultSRAMCfg;
 
 static bool IsDeviceInLightSleep = false;
 
-void mcu_init(void* pvParameters);
+void mcu_init(void *pvParameters);
 void configure_power_mode(bool highPerformance);
 void device_lightsleep();
 void device_lightsleep_wakeup();

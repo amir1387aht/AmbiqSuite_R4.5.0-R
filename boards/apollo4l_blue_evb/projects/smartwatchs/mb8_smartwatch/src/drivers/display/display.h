@@ -8,11 +8,11 @@
 #include "../gpio/gpio.h"
 
 #define display_height 490
-#define display_width 192
+#define display_width  192
 
 #define PANEL_COLOR_DEPTH 16
-#define DRAW_BUF_LINES 64
-#define DRAW_BUF_SIZE (display_width * DRAW_BUF_LINES)
+#define DRAW_BUF_LINES    64
+#define DRAW_BUF_SIZE     (display_width * DRAW_BUF_LINES)
 
 extern lv_color_t display_buffer1[DRAW_BUF_SIZE];
 extern lv_color_t display_buffer2[DRAW_BUF_SIZE];

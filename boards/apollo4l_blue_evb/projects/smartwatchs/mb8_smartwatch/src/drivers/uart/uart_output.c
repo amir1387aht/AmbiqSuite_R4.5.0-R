@@ -12,19 +12,18 @@
 #include "task.h"
 static SemaphoreHandle_t uart_tx_lock;
 
-void *phUART;
+void   *phUART;
 uint8_t g_pui8TxBuffer[256];
 uint8_t g_pui8RxBuffer[2];
 
-const am_hal_uart_config_t g_sUartConfig =
-{
+const am_hal_uart_config_t g_sUartConfig = {
     //
     // Standard UART settings: 115200-8-N-1
     //
     .ui32BaudRate = 115200,
-    .eDataBits = AM_HAL_UART_DATA_BITS_8,
-    .eParity = AM_HAL_UART_PARITY_NONE,
-    .eStopBits = AM_HAL_UART_ONE_STOP_BIT,
+    .eDataBits    = AM_HAL_UART_DATA_BITS_8,
+    .eParity      = AM_HAL_UART_PARITY_NONE,
+    .eStopBits    = AM_HAL_UART_ONE_STOP_BIT,
     .eFlowControl = AM_HAL_UART_FLOW_CTRL_NONE,
     //
     // Set TX and RX FIFOs to interrupt at half-full.
@@ -46,85 +45,105 @@ void am_uart_isr(void)
 
 int uart_write_bytes(const char *text, size_t length)
 {
-    if (!length) return 0;
-    if (!text || !phUART || length > INT_MAX) { errno = EINVAL; return -1; }
-    bool locked = uart_tx_lock && __get_IPSR() == 0 &&
-                  xTaskGetSchedulerState() == taskSCHEDULER_RUNNING;
-    if (locked && xSemaphoreTake(uart_tx_lock, portMAX_DELAY) != pdTRUE) return -1;
-    uint32_t written = 0;
-    const am_hal_uart_transfer_t transfer = {
-        .eType = AM_HAL_UART_BLOCKING_WRITE, .pui8Data = (uint8_t *)text,
-        .ui32NumBytes = (uint32_t)length, .pui32BytesTransferred = &written,
-        .ui32TimeoutMs = 100, .pfnCallback = NULL, .pvContext = NULL, .ui32ErrorStatus = 0
-    };
-    uint32_t status = am_hal_uart_transfer(phUART, &transfer);
-    if (locked) xSemaphoreGive(uart_tx_lock);
-    if (status != AM_HAL_STATUS_SUCCESS && !written) { errno = EIO; return -1; }
+    if (!length)
+        return 0;
+    if (!text || !phUART || length > INT_MAX)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+    bool locked =
+        uart_tx_lock && __get_IPSR() == 0 && xTaskGetSchedulerState() == taskSCHEDULER_RUNNING;
+    if (locked && xSemaphoreTake(uart_tx_lock, portMAX_DELAY) != pdTRUE)
+        return -1;
+    uint32_t                     written  = 0;
+    const am_hal_uart_transfer_t transfer = {.eType = AM_HAL_UART_BLOCKING_WRITE,
+        .pui8Data                                   = (uint8_t *)text,
+        .ui32NumBytes                               = (uint32_t)length,
+        .pui32BytesTransferred                      = &written,
+        .ui32TimeoutMs                              = 100,
+        .pfnCallback                                = NULL,
+        .pvContext                                  = NULL,
+        .ui32ErrorStatus                            = 0};
+    uint32_t                     status   = am_hal_uart_transfer(phUART, &transfer);
+    if (locked)
+        xSemaphoreGive(uart_tx_lock);
+    if (status != AM_HAL_STATUS_SUCCESS && !written)
+    {
+        errno = EIO;
+        return -1;
+    }
     return (int)written;
 }
+
 void uart_print(char *text)
 {
     size_t length = strlen(text);
-    if (uart_write_bytes(text, length) != (int)length) {
+    if (uart_write_bytes(text, length) != (int)length)
+    {
         /* Retain the existing fail-stop policy for core diagnostic output. */
-        for (;;) {}
+        for (;;)
+        {
+        }
     }
 }
 
 bool uart_log_write(const char *text, size_t length)
 {
-    if (!uart_tx_lock || !text || length == 0) return false;
-    if (xSemaphoreTake(uart_tx_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return false;
+    if (!uart_tx_lock || !text || length == 0)
+        return false;
+    if (xSemaphoreTake(uart_tx_lock, pdMS_TO_TICKS(1000)) != pdTRUE)
+        return false;
     uint32_t written = 0;
     /* This runs only on lower-priority loggers. Allow graphics to preempt
      * it while UART drains. A failed diagnostic write must not hang the UI. */
-    const am_hal_uart_transfer_t transfer = {
-        .eType = AM_HAL_UART_BLOCKING_WRITE,
-        .pui8Data = (uint8_t *)text, .ui32NumBytes = (uint32_t)length,
-        .pui32BytesTransferred = &written, .ui32TimeoutMs = 1000,
-        .pfnCallback = NULL, .pvContext = NULL, .ui32ErrorStatus = 0
-    };
-    uint32_t status = am_hal_uart_transfer(phUART, &transfer);
+    const am_hal_uart_transfer_t transfer = {.eType = AM_HAL_UART_BLOCKING_WRITE,
+        .pui8Data                                   = (uint8_t *)text,
+        .ui32NumBytes                               = (uint32_t)length,
+        .pui32BytesTransferred                      = &written,
+        .ui32TimeoutMs                              = 1000,
+        .pfnCallback                                = NULL,
+        .pvContext                                  = NULL,
+        .ui32ErrorStatus                            = 0};
+    uint32_t                     status   = am_hal_uart_transfer(phUART, &transfer);
     xSemaphoreGive(uart_tx_lock);
     return status == AM_HAL_STATUS_SUCCESS && written == length;
 }
 
-am_hal_gpio_pincfg_t g_AM_GPIO_COM_UART_TX =
-{
-    .GP.cfg_b.uFuncSel = AM_HAL_PIN_0_UART0TX,
-    .GP.cfg_b.eGPInput = AM_HAL_GPIO_PIN_INPUT_NONE,
-    .GP.cfg_b.eGPRdZero = AM_HAL_GPIO_PIN_RDZERO_READPIN,
-    .GP.cfg_b.eIntDir = AM_HAL_GPIO_PIN_INTDIR_NONE,
-    .GP.cfg_b.eGPOutCfg = AM_HAL_GPIO_PIN_OUTCFG_DISABLE,
+am_hal_gpio_pincfg_t g_AM_GPIO_COM_UART_TX = {
+    .GP.cfg_b.uFuncSel       = AM_HAL_PIN_0_UART0TX,
+    .GP.cfg_b.eGPInput       = AM_HAL_GPIO_PIN_INPUT_NONE,
+    .GP.cfg_b.eGPRdZero      = AM_HAL_GPIO_PIN_RDZERO_READPIN,
+    .GP.cfg_b.eIntDir        = AM_HAL_GPIO_PIN_INTDIR_NONE,
+    .GP.cfg_b.eGPOutCfg      = AM_HAL_GPIO_PIN_OUTCFG_DISABLE,
     .GP.cfg_b.eDriveStrength = AM_HAL_GPIO_PIN_DRIVESTRENGTH_0P5X,
-    .GP.cfg_b.uSlewRate = 0,
-    .GP.cfg_b.ePullup = AM_HAL_GPIO_PIN_PULLUP_NONE,
-    .GP.cfg_b.uNCE = 0,
-    .GP.cfg_b.eCEpol = AM_HAL_GPIO_PIN_CEPOL_ACTIVELOW,
-    .GP.cfg_b.uRsvd_0 = 0,
-    .GP.cfg_b.ePowerSw = AM_HAL_GPIO_PIN_POWERSW_NONE,
-    .GP.cfg_b.eForceInputEn = AM_HAL_GPIO_PIN_FORCEEN_NONE,
+    .GP.cfg_b.uSlewRate      = 0,
+    .GP.cfg_b.ePullup        = AM_HAL_GPIO_PIN_PULLUP_NONE,
+    .GP.cfg_b.uNCE           = 0,
+    .GP.cfg_b.eCEpol         = AM_HAL_GPIO_PIN_CEPOL_ACTIVELOW,
+    .GP.cfg_b.uRsvd_0        = 0,
+    .GP.cfg_b.ePowerSw       = AM_HAL_GPIO_PIN_POWERSW_NONE,
+    .GP.cfg_b.eForceInputEn  = AM_HAL_GPIO_PIN_FORCEEN_NONE,
     .GP.cfg_b.eForceOutputEn = AM_HAL_GPIO_PIN_FORCEEN_NONE,
-    .GP.cfg_b.uRsvd_1 = 0,
+    .GP.cfg_b.uRsvd_1        = 0,
 };
 
-am_hal_gpio_pincfg_t g_AM_GPIO_COM_UART_RX =
-{
-    .GP.cfg_b.uFuncSel = AM_HAL_PIN_2_UART0RX,
-    .GP.cfg_b.eGPInput = AM_HAL_GPIO_PIN_INPUT_NONE,
-    .GP.cfg_b.eGPRdZero = AM_HAL_GPIO_PIN_RDZERO_READPIN,
-    .GP.cfg_b.eIntDir = AM_HAL_GPIO_PIN_INTDIR_NONE,
-    .GP.cfg_b.eGPOutCfg = AM_HAL_GPIO_PIN_OUTCFG_DISABLE,
+am_hal_gpio_pincfg_t g_AM_GPIO_COM_UART_RX = {
+    .GP.cfg_b.uFuncSel       = AM_HAL_PIN_2_UART0RX,
+    .GP.cfg_b.eGPInput       = AM_HAL_GPIO_PIN_INPUT_NONE,
+    .GP.cfg_b.eGPRdZero      = AM_HAL_GPIO_PIN_RDZERO_READPIN,
+    .GP.cfg_b.eIntDir        = AM_HAL_GPIO_PIN_INTDIR_NONE,
+    .GP.cfg_b.eGPOutCfg      = AM_HAL_GPIO_PIN_OUTCFG_DISABLE,
     .GP.cfg_b.eDriveStrength = AM_HAL_GPIO_PIN_DRIVESTRENGTH_0P1X,
-    .GP.cfg_b.uSlewRate = 0,
-    .GP.cfg_b.ePullup = AM_HAL_GPIO_PIN_PULLUP_NONE,
-    .GP.cfg_b.uNCE = 0,
-    .GP.cfg_b.eCEpol = AM_HAL_GPIO_PIN_CEPOL_ACTIVELOW,
-    .GP.cfg_b.uRsvd_0 = 0,
-    .GP.cfg_b.ePowerSw = AM_HAL_GPIO_PIN_POWERSW_NONE,
-    .GP.cfg_b.eForceInputEn = AM_HAL_GPIO_PIN_FORCEEN_NONE,
+    .GP.cfg_b.uSlewRate      = 0,
+    .GP.cfg_b.ePullup        = AM_HAL_GPIO_PIN_PULLUP_NONE,
+    .GP.cfg_b.uNCE           = 0,
+    .GP.cfg_b.eCEpol         = AM_HAL_GPIO_PIN_CEPOL_ACTIVELOW,
+    .GP.cfg_b.uRsvd_0        = 0,
+    .GP.cfg_b.ePowerSw       = AM_HAL_GPIO_PIN_POWERSW_NONE,
+    .GP.cfg_b.eForceInputEn  = AM_HAL_GPIO_PIN_FORCEEN_NONE,
     .GP.cfg_b.eForceOutputEn = AM_HAL_GPIO_PIN_FORCEEN_NONE,
-    .GP.cfg_b.uRsvd_1 = 0,
+    .GP.cfg_b.uRsvd_1        = 0,
 };
 
 void uart_init()

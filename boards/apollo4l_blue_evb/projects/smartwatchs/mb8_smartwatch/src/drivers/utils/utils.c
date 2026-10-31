@@ -1,27 +1,22 @@
 #include "./utils.h"
 #include "watch_gpu.h"
 
-const am_hal_pwrctrl_mcu_memory_config_t i_DefaultMcuMemCfg =
-{
-    .eCacheCfg          = AM_HAL_PWRCTRL_CACHE_ALL,
-    .bRetainCache       = true,
-    .eDTCMCfg           = AM_HAL_PWRCTRL_DTCM_384K,
-    .eRetainDTCM        = AM_HAL_PWRCTRL_DTCM_384K,
-    .bEnableNVM0        = true,
-    .bRetainNVM0        = false
-};
+const am_hal_pwrctrl_mcu_memory_config_t i_DefaultMcuMemCfg = {
+    .eCacheCfg    = AM_HAL_PWRCTRL_CACHE_ALL,
+    .bRetainCache = true,
+    .eDTCMCfg     = AM_HAL_PWRCTRL_DTCM_384K,
+    .eRetainDTCM  = AM_HAL_PWRCTRL_DTCM_384K,
+    .bEnableNVM0  = true,
+    .bRetainNVM0  = false};
 
-const am_hal_pwrctrl_sram_memcfg_t i_DefaultSRAMCfg =
-{
-    .eSRAMCfg           = AM_HAL_PWRCTRL_SRAM_ALL,
-    .eActiveWithMCU     = AM_HAL_PWRCTRL_SRAM_ALL,
-    .eActiveWithGFX     = AM_HAL_PWRCTRL_SRAM_ALL,
-    .eActiveWithDISP    = AM_HAL_PWRCTRL_SRAM_ALL,
-    .eActiveWithDSP     = AM_HAL_PWRCTRL_SRAM_ALL,
-    .eSRAMRetain        = AM_HAL_PWRCTRL_SRAM_ALL
-};
+const am_hal_pwrctrl_sram_memcfg_t i_DefaultSRAMCfg = {.eSRAMCfg = AM_HAL_PWRCTRL_SRAM_ALL,
+    .eActiveWithMCU                                              = AM_HAL_PWRCTRL_SRAM_ALL,
+    .eActiveWithGFX                                              = AM_HAL_PWRCTRL_SRAM_ALL,
+    .eActiveWithDISP                                             = AM_HAL_PWRCTRL_SRAM_ALL,
+    .eActiveWithDSP                                              = AM_HAL_PWRCTRL_SRAM_ALL,
+    .eSRAMRetain                                                 = AM_HAL_PWRCTRL_SRAM_ALL};
 
-void mcu_init(void* pvParameters)
+void mcu_init(void *pvParameters)
 {
     /* RAM was powered and application heaps initialized in main(). */
 
@@ -48,22 +43,27 @@ void mcu_init(void* pvParameters)
 
 void configure_power_mode(bool highPerformance)
 {
-    uint32_t ui32retval = am_hal_pwrctrl_mcu_mode_select(highPerformance ? AM_HAL_PWRCTRL_MCU_MODE_HIGH_PERFORMANCE : AM_HAL_PWRCTRL_MCU_MODE_LOW_POWER);
-    
+    uint32_t ui32retval =
+        am_hal_pwrctrl_mcu_mode_select(highPerformance ? AM_HAL_PWRCTRL_MCU_MODE_HIGH_PERFORMANCE
+                                                       : AM_HAL_PWRCTRL_MCU_MODE_LOW_POWER);
+
     if (ui32retval != AM_HAL_STATUS_SUCCESS)
     {
         am_util_stdio_printf("Error setting power mode, returned %d.\n", ui32retval);
-        while(1);
+        while (1)
+            ;
     }
 }
 
-void device_lightsleep() {
+void device_lightsleep()
+{
     display_turn_off();
     configure_power_mode(false);
     IsDeviceInLightSleep = true;
 }
 
-void device_lightsleep_wakeup() {
+void device_lightsleep_wakeup()
+{
     display_turn_on();
     configure_power_mode(true);
     IsDeviceInLightSleep = false;

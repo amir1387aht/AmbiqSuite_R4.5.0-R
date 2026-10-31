@@ -10,10 +10,9 @@ void watch_gpu_copy_init(void);
  * Source is 64-bit aligned; destination is within a 64-bit-aligned RGB565
  * frame with a stride divisible by four pixels (the watch uses 192).
  * Returns only when both the source buffer and panel destination can be reused. */
-void watch_gpu_copy_rect(uint16_t *dst, size_t dst_stride,
-                            const void *src, size_t width, size_t height);
+void watch_gpu_copy_rect(
+    uint16_t *dst, size_t dst_stride, const void *src, size_t width, size_t height);
 /* Snapshot the last submitted RGB565 frame before a partial refresh. Both
  * GPU and MSPI may read src concurrently, but only the GPU/CPU writes dst. */
-void watch_gpu_copy_frame(uint16_t *dst, const uint16_t *src,
-                          size_t width, size_t height);
+void watch_gpu_copy_frame(uint16_t *dst, const uint16_t *src, size_t width, size_t height);
 #endif
