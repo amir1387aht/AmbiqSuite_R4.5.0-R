@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #ifndef MB8_NAND_TRANSPORT_H
 #define MB8_NAND_TRANSPORT_H
+#include "mb8_nand_diagnostics.h"
 #ifndef WATCH_NAND_MSPI_QUAD
 #define WATCH_NAND_MSPI_QUAD 1
 #endif

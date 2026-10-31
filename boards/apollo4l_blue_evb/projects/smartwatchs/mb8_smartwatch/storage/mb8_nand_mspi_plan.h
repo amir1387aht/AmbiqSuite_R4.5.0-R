@@ -22,5 +22,5 @@ int mb8_nand_mspi_plan(const uint8_t *,
     bool,
     struct mb8_nand_mspi_plan *);
 /* Current E5 A1/1.8V chip ONLY. Never generalize a 133MHz claim to this part. */
-int mb8_nand_mspi_clock_select(uint32_t hz, bool validated, uint32_t *divider);
+int mb8_nand_mspi_clock_select(uint32_t hz, uint32_t *divider);
 #endif

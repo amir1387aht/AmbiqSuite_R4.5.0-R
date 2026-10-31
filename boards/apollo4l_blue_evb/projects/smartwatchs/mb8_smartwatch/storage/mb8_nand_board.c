@@ -1,9 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include "mb8_nand_board.h"
 const struct mb8_nand_board_config mb8_nand_board = {
-    .pinout_confirmed            = MB8_NAND_PINOUT_CONFIRMED,
-    .voltage_confirmed           = MB8_NAND_1V8_CONFIRMED,
-    .part_geometry_confirmed     = MB8_NAND_PART_GEOMETRY_CONFIRMED,
+    .profile                     = MB8_NAND_PROFILE,
     .partition_confirmed         = MB8_NAND_PARTITION_CONFIRMED,
     .writes_authorized           = MB8_NAND_WRITES_AUTHORIZED,
     .yaffs_provisioned_confirmed = MB8_NAND_YAFFS_PROVISIONED_CONFIRMED,
@@ -12,8 +10,6 @@ const struct mb8_nand_board_config mb8_nand_board = {
     .io2_func                    = MB8_NAND_IO2_FUNC,
     .io3_pin                     = MB8_NAND_IO3_PIN,
     .io3_func                    = MB8_NAND_IO3_FUNC,
-    .qspi_io23_pullups_confirmed = MB8_NAND_QSPI_IO23_PULLUPS_CONFIRMED,
-    .qspi_max_clock_validated    = MB8_NAND_QSPI_MAX_CLOCK_VALIDATED,
     .mspi_clkond4                = MB8_NAND_MSPI_CLKOND4,
     .iom                         = MB8_NAND_IOM,
     .cs_channel                  = MB8_NAND_CS_CHANNEL,

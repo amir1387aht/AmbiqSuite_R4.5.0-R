@@ -29,6 +29,11 @@ struct mb8_storage_usage
 void mb8_storage_startup(void);
 int  mb8_storage_probe_only(void);
 int  mb8_storage_get_usage(struct mb8_storage_usage *);
+#if WATCH_NAND_STARTUP_TESTS
+/* Explicit RAW diagnostic only: <=256B twice, closed read-only transaction.
+ * Does NOT infer a filesystem partition or alter the ID-only empty-range API. */
+int mb8_storage_raw_read_pair(uint32_t physical_page, void *, void *, size_t);
+#endif
 /* Diagnostics only: mounted partition-relative page, bounded <=2048B read. */
 int         mb8_storage_read_sample(uint32_t relative_page, void *, size_t);
 int         mb8_storage_mount(bool read_only);

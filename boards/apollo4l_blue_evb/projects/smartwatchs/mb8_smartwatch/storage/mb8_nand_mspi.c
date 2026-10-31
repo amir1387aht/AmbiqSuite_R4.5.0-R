@@ -5,6 +5,7 @@
 #include "mb8_nand_mspi.h"
 #include "mb8_nand_mspi_plan.h"
 #include "mb8_nand_board.h"
+#include "mb8_nand_diagnostics.h"
 #include "am_mcu_apollo.h"
 #include "am_util.h"
 #include <string.h>
@@ -242,21 +243,34 @@ static bool reserved_pin(uint32_t pin)
     return false;
 }
 
+static const char *const signals[] = {"IO0", "IO1", "IO2", "IO3", "SCK", "CS"};
+
 static int validate_pins(const uint32_t *pins, const uint32_t *functions)
 {
-    if (mb8_nand_board.mspi >= AM_REG_MSPI_NUM_MODULES || mb8_nand_board.mspi == 1 ||
-        mb8_nand_board.cs_channel > 1 || mb8_nand_board.mspi_clkond4 > 1)
-        return DS35_NOT_READY;
+    if (mb8_nand_board.mspi >= AM_REG_MSPI_NUM_MODULES)
+        return mb8_nand_diag_fail(
+            DS35_NOT_READY, "controller-guard", "MSPI instance outside SDK range");
+    if (mb8_nand_board.mspi == 1)
+        return mb8_nand_diag_fail(DS35_NOT_READY, "controller-guard", "MSPI1 reserved for display");
+    if (mb8_nand_board.cs_channel > 1)
+        return mb8_nand_diag_fail(DS35_NOT_READY, "ce-guard", "hardware CE must be0 or1");
+    if (mb8_nand_board.mspi_clkond4 > 1)
+        return mb8_nand_diag_fail(DS35_NOT_READY, "sck-guard", "CLKOND4 must be0 or1");
     am_hal_pin_function_e base =
         mb8_nand_board.mspi == 0 ? AM_HAL_PIN_FN_MSPI0_0 : AM_HAL_PIN_FN_MSPI2_0;
     for (unsigned i = 0; i < 6; i++)
     {
-        if (pins[i] >= AM_HAL_PIN_TOTAL_GPIOS || functions[i] >= AM_HAL_PIN_NUMFUNCS ||
-            reserved_pin(pins[i]))
-            return DS35_NOT_READY;
+        mb8_nand_diag_pin(signals[i], pins[i], functions[i], false, 0, 0);
+        if (pins[i] >= AM_HAL_PIN_TOTAL_GPIOS || functions[i] >= AM_HAL_PIN_NUMFUNCS)
+            return mb8_nand_diag_fail(
+                DS35_NOT_READY, "pin-range", "GPIO or function selector outside SDK table");
+        if (reserved_pin(pins[i]))
+            return mb8_nand_diag_fail(
+                DS35_NOT_READY, "pin-reserved", "display/power/reset GPIO forbidden");
         for (unsigned j = 0; j < i; j++)
             if (pins[i] == pins[j])
-                return DS35_EINVAL;
+                return mb8_nand_diag_fail(
+                    DS35_EINVAL, "pin-duplicate", "two NAND signals share one GPIO");
         uint16_t wanted;
         if (i < 4)
             wanted = base + i;
@@ -264,32 +278,35 @@ static int validate_pins(const uint32_t *pins, const uint32_t *functions)
             wanted = base + (mb8_nand_board.mspi_clkond4 ? 4 : 8);
         else
             wanted = AM_HAL_PIN_FN_NCE0 + pins[i];
-        /* Authoritative chip mux matrix, not a guessed EVB assignment. */
-        if (am_hal_pin_fn_list[pins[i]][functions[i]] != wanted)
-            return DS35_NOT_READY;
+        uint16_t actual = am_hal_pin_fn_list[pins[i]][functions[i]];
+        if (actual != wanted)
+        {
+            mb8_nand_diag_pin(signals[i], pins[i], functions[i], true, wanted, actual);
+            return mb8_nand_diag_fail(
+                DS35_NOT_READY, "pin-matrix", "selector does not route expected MSPI lane/NCE");
+        }
     }
     return DS35_OK;
 }
 
 int mb8_nand_mspi_open(struct ds35_bus *bus)
 {
+    mb8_nand_diag_begin("MSPI 1-1-4");
     if (poisoned)
-        return DS35_NOT_READY;
+        return mb8_nand_diag_fail(
+            DS35_NOT_READY, "poisoned", "firmware reset required after prior bus fault");
     if (!bus || mspi)
-        return DS35_EINVAL;
-    if (!mb8_nand_board.pinout_confirmed || !mb8_nand_board.voltage_confirmed ||
-        !mb8_nand_board.part_geometry_confirmed || !mb8_nand_board.qspi_io23_pullups_confirmed)
-        return DS35_NOT_READY;
-    uint32_t requested_divider;
-    if (mb8_nand_mspi_clock_select(mb8_nand_board.clock_hz,
-            mb8_nand_board.qspi_max_clock_validated,
-            &requested_divider) < 0)
-        return DS35_EINVAL;
-    uint32_t hz = mb8_nand_board.qspi_max_clock_validated ? 48000000u : mb8_nand_board.clock_hz;
-    int      r =
-        mb8_nand_mspi_clock_select(hz, mb8_nand_board.qspi_max_clock_validated, &target_divider);
+        return mb8_nand_diag_fail(
+            DS35_EINVAL, "handle-guard", "NULL output bus or controller already open");
+    if (mb8_nand_board.profile != MB8_NAND_PROFILE_STOCK_MB8)
+        return mb8_nand_diag_fail(
+            DS35_NOT_READY, "board-profile", "unsupported board profile; expected stock MiBand8");
+    uint32_t hz = mb8_nand_board.clock_hz;
+    int      r  = mb8_nand_mspi_clock_select(hz, &target_divider);
     if (r < 0)
-        return r;
+        return mb8_nand_diag_fail(
+            r, "clock-request", "clock unsupported by MCU or above DS35M1GB83MHz limit");
+    mb8_nand_diag_clock(hz);
     const uint32_t pins[]      = {mb8_nand_board.mosi_pin,
         mb8_nand_board.miso_pin,
         mb8_nand_board.io2_pin,
@@ -304,14 +321,23 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
         mb8_nand_board.cs_func};
     if ((r = validate_pins(pins, functions)) < 0)
         return r;
+    mb8_nand_diag_pin(NULL, 0, 0, false, 0, 0);
+    mb8_nand_diag_hardware();
     uint32_t status = am_hal_mspi_initialize(mb8_nand_board.mspi, &mspi);
+    mb8_nand_diag_hal(status, "controller-initialize");
     if (!status)
+    {
         status = am_hal_mspi_power_control(mspi, AM_HAL_SYSCTRL_WAKE, false);
+        mb8_nand_diag_hal(status, "controller-power-wake");
+    }
     am_hal_mspi_config_t cfg = {.ui32TCBSize = sizeof(tcb) / sizeof(tcb[0]),
         .pTCB                                = tcb,
         .bClkonD4                            = mb8_nand_board.mspi_clkond4 != 0};
     if (!status)
+    {
         status = am_hal_mspi_configure(mspi, &cfg);
+        mb8_nand_diag_hal(status, "controller-configure");
+    }
     am_hal_mspi_dev_config_t device = {.ui8TurnAround = 8,
         .eAddrCfg                                     = AM_HAL_MSPI_ADDR_2_BYTE,
         .eInstrCfg                                    = AM_HAL_MSPI_INSTR_1_BYTE,
@@ -330,9 +356,15 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
         .ui16DMATimeLimit = 0,
         .eDMABoundary     = AM_HAL_MSPI_BOUNDARY_NONE};
     if (!status)
+    {
         status = am_hal_mspi_device_configure(mspi, &device);
+        mb8_nand_diag_hal(status, "device-configure");
+    }
     if (!status)
+    {
         status = am_hal_mspi_enable(mspi);
+        mb8_nand_diag_hal(status, "controller-enable");
+    }
     for (unsigned i = 0; i < 6 && !status; i++)
     {
         am_hal_gpio_pincfg_t pin    = {0};
@@ -348,6 +380,11 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
             pin.GP.cfg_b.eCEpol    = AM_HAL_GPIO_PIN_CEPOL_ACTIVELOW;
         }
         status = am_hal_gpio_pinconfig(pins[i], pin);
+        if (status)
+        {
+            mb8_nand_diag_pin(signals[i], pins[i], functions[i], false, 0, 0);
+            mb8_nand_diag_hal(status, "pad-configure");
+        }
     }
     if (status)
     {

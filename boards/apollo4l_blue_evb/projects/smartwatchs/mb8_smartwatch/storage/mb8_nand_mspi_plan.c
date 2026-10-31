@@ -4,9 +4,9 @@
 #include "mb8_nand_mspi_plan.h"
 #include <string.h>
 
-int mb8_nand_mspi_clock_select(uint32_t hz, bool validated, uint32_t *divider)
+int mb8_nand_mspi_clock_select(uint32_t hz, uint32_t *divider)
 {
-    if (!divider || hz > DS35_MAX_CLOCK_HZ || (hz > 12000000u && !validated))
+    if (!divider || hz > DS35_MAX_CLOCK_HZ)
         return DS35_EINVAL;
     switch (hz)
     {

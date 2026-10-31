@@ -5,6 +5,7 @@
  */
 #include "mb8_nand_iom.h"
 #include "mb8_nand_board.h"
+#include "mb8_nand_diagnostics.h"
 #include "am_mcu_apollo.h"
 #include "am_util.h"
 #include <string.h>
@@ -124,42 +125,65 @@ static void delay(void *ctx, uint32_t us)
 
 int mb8_nand_iom_open(struct ds35_bus *bus)
 {
+    mb8_nand_diag_begin("IOM x1");
     if (poisoned)
-        return DS35_NOT_READY;
+        return mb8_nand_diag_fail(
+            DS35_NOT_READY, "poisoned", "firmware reset required after prior fault");
     if (!bus || iom)
-        return DS35_EINVAL;
-    if (!mb8_nand_board.pinout_confirmed || !mb8_nand_board.voltage_confirmed ||
-        !mb8_nand_board.wp_hold_high_confirmed || mb8_nand_board.iom >= 8 ||
-        mb8_nand_board.cs_channel >= 4 || !mb8_nand_board.clock_hz ||
-        mb8_nand_board.clock_hz > 48000000u)
-        return DS35_NOT_READY;
-    const uint32_t pins[]  = {mb8_nand_board.sck_pin,
+        return mb8_nand_diag_fail(DS35_EINVAL, "handle-guard", "NULL bus or IOM already open");
+    if (mb8_nand_board.profile != MB8_NAND_PROFILE_STOCK_MB8)
+        return mb8_nand_diag_fail(DS35_NOT_READY, "board-profile", "unsupported board profile");
+    if (!mb8_nand_board.wp_hold_high_confirmed)
+        return mb8_nand_diag_fail(
+            DS35_NOT_READY, "wp-hold-guard", "WP_HOLD_HIGH_CONFIRMED=0 (IOM x1 only)");
+    if (mb8_nand_board.iom >= 8)
+        return mb8_nand_diag_fail(DS35_NOT_READY, "controller-guard", "IOM instance outside range");
+    if (mb8_nand_board.cs_channel >= 4)
+        return mb8_nand_diag_fail(DS35_NOT_READY, "ce-guard", "IOM CE must be0..3");
+    if (!mb8_nand_board.clock_hz || mb8_nand_board.clock_hz > 48000000u)
+        return mb8_nand_diag_fail(
+            DS35_NOT_READY, "clock-request", "IOM requested clock must be1..48000000Hz");
+    mb8_nand_diag_clock(mb8_nand_board.clock_hz);
+    const uint32_t    pins[]    = {mb8_nand_board.sck_pin,
         mb8_nand_board.mosi_pin,
         mb8_nand_board.miso_pin,
         mb8_nand_board.cs_pin};
-    const uint32_t funcs[] = {mb8_nand_board.sck_func,
+    const uint32_t    funcs[]   = {mb8_nand_board.sck_func,
         mb8_nand_board.mosi_func,
         mb8_nand_board.miso_func,
         mb8_nand_board.cs_func};
+    const char *const signals[] = {"SCK", "IO0", "IO1", "CS"};
     for (unsigned i = 0; i < 4; i++)
     {
+        mb8_nand_diag_pin(signals[i], pins[i], funcs[i], false, 0, 0);
         if (pins[i] >= 128 || funcs[i] >= 8)
-            return DS35_NOT_READY;
+            return mb8_nand_diag_fail(
+                DS35_NOT_READY, "pin-range", "IOM pin/selector outside supported range");
         for (unsigned j = 0; j < i; j++)
             if (pins[i] == pins[j])
-                return DS35_EINVAL;
+                return mb8_nand_diag_fail(
+                    DS35_EINVAL, "pin-duplicate", "two IOM signals share GPIO");
     }
+    mb8_nand_diag_pin(NULL, 0, 0, false, 0, 0);
+    mb8_nand_diag_hardware();
     poisoned        = false;
     uint32_t status = am_hal_iom_initialize(mb8_nand_board.iom, &iom);
+    mb8_nand_diag_hal(status, "controller-initialize");
     if (!status)
+    {
         status = am_hal_iom_power_ctrl(iom, AM_HAL_SYSCTRL_WAKE, false);
+        mb8_nand_diag_hal(status, "controller-power-wake");
+    }
     am_hal_iom_config_t cfg = {.eInterfaceMode = AM_HAL_IOM_SPI_MODE,
         .ui32ClockFreq                         = mb8_nand_board.clock_hz,
         .eSpiMode                              = AM_HAL_IOM_SPI_MODE_0,
         .pNBTxnBuf                             = cq,
         .ui32NBTxnBufLength                    = sizeof(cq) / sizeof(cq[0])};
     if (!status)
+    {
         status = am_hal_iom_configure(iom, &cfg);
+        mb8_nand_diag_hal(status, "controller-configure");
+    }
     /* Board owner must verify selected pad functions and voltage domains.
      * Preserve other pad fields at safe zero defaults; use no internal pulls.
      */
@@ -179,9 +203,17 @@ int mb8_nand_iom_open(struct ds35_bus *bus)
             pin.GP.cfg_b.eCEpol    = AM_HAL_GPIO_PIN_CEPOL_ACTIVELOW;
         }
         status = am_hal_gpio_pinconfig(pins[i], pin);
+        if (status)
+        {
+            mb8_nand_diag_pin(signals[i], pins[i], funcs[i], false, 0, 0);
+            mb8_nand_diag_hal(status, "pad-configure");
+        }
     }
     if (!status)
+    {
         status = am_hal_iom_enable(iom);
+        mb8_nand_diag_hal(status, "controller-enable");
+    }
     if (status)
     {
         mb8_nand_iom_close();

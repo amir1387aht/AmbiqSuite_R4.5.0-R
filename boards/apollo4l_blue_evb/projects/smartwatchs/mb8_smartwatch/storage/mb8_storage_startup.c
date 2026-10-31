@@ -3,9 +3,10 @@
  */
 #include "mb8_storage.h"
 #include "mb8_nand_board.h"
+#include "mb8_nand_transport.h"
 #include "FreeRTOS.h"
 #include "task.h"
-#include "am_util.h"
+#include "mb8_storage_log.h"
 #include "watch_gpu.h"
 #if WATCH_NAND_STARTUP_TESTS
 #include "mb8_storage_startup_tests.h"
@@ -15,7 +16,7 @@ static TaskHandle_t worker;
 
 static void print_size(const char *label, uint64_t bytes)
 {
-    am_util_stdio_printf("[NAND] %s=%llu bytes (%llu KiB, %llu.%03llu MiB)\r\n",
+    mb8_storage_log("[NAND] %s=%llu bytes (%llu KiB, %llu.%03llu MiB)\r\n",
         label,
         (unsigned long long)bytes,
         (unsigned long long)(bytes / 1024u),
@@ -29,24 +30,24 @@ static void report(void)
     int                      r = mb8_storage_get_usage(&u);
     if (u.raw_identified)
     {
-        am_util_stdio_printf("[NAND] ID=E5 A1; raw capacity from confirmed geometry\r\n");
+        mb8_storage_log("[NAND] ID=E5 A1; raw capacity from E5 A1 profile geometry\r\n");
         if (u.status_valid)
-            am_util_stdio_printf("[NAND] sampled status=0x%02x (not a live health guarantee)\r\n",
+            mb8_storage_log("[NAND] sampled status=0x%02x (not a live health guarantee)\r\n",
                 (unsigned)u.status_register);
         else
-            am_util_stdio_printf("[NAND] status unavailable: status read did not complete\r\n");
+            mb8_storage_log("[NAND] status unavailable: status read did not complete\r\n");
         print_size("raw chip MAIN (not filesystem free space)", u.raw_main_bytes);
     }
     else
-        am_util_stdio_printf("[NAND] raw capacity unavailable: ID not successfully probed\r\n");
+        mb8_storage_log("[NAND] raw capacity unavailable: ID not successfully probed\r\n");
     if (r < 0)
     {
-        am_util_stdio_printf(
+        mb8_storage_log(
             "[NAND] filesystem used / total - free: unavailable: %s\r\n", mb8_storage_status());
         return;
     }
-    am_util_stdio_printf("[NAND] YAFFS /nand %s used_or_unavailable / total - free: "
-                         "%llu / %llu - %llu bytes\r\n",
+    mb8_storage_log("[NAND] YAFFS /nand %s used_or_unavailable / total - free: "
+                    "%llu / %llu - %llu bytes\r\n",
         u.read_only ? "RO" : "RW",
         (unsigned long long)u.used_or_unavailable_bytes,
         (unsigned long long)u.total_bytes,
@@ -55,7 +56,7 @@ static void report(void)
     print_size("YAFFS API total", u.total_bytes);
     print_size("YAFFS allocatable free", u.free_bytes);
     print_size("selected partition MAIN", u.partition_main_bytes);
-    am_util_stdio_printf(
+    mb8_storage_log(
         "[NAND] partition dead blocks=%u GC-reserved=%u checkpoint-present=%u; "
         "total excludes GC reserve; used includes metadata/bad/checkpoint/other unavailable space, "
         "NOT sum of file lengths.\r\n",
@@ -64,33 +65,102 @@ static void report(void)
         (unsigned)u.checkpoint_blocks);
 }
 
+static void report_bus_failure(void)
+{
+    const struct mb8_nand_diagnostic *d = mb8_nand_bus_diagnostic();
+    if (!d->attempted || d->result >= 0)
+        return;
+    mb8_storage_log("[NAND bus] backend=%s stage=%s DS35=%d reason=%s\r\n",
+        d->backend,
+        d->stage,
+        d->result,
+        d->reason);
+    if (d->hal_valid)
+        mb8_storage_log("[NAND bus] first HAL status=%u (0x%08x), retained before cleanup\r\n",
+            (unsigned)d->hal_status,
+            (unsigned)d->hal_status);
+    else
+        mb8_storage_log("[NAND bus] HAL status=N/A (failure before a failed HAL call)\r\n");
+    mb8_storage_log("[NAND bus] %s; NAND JEDEC probe not started\r\n",
+        d->hardware_attempted
+            ? "controller/pad initialization attempted; cleanup attempted"
+            : "this open rejected in preflight; no hardware touched by this attempt");
+    mb8_storage_log("[NAND cfg] MSPI=%u IOM=%u CE=%u requested=%uHz selected_target=%uHz "
+                    "initial_config=%uHz profile=%u CLKOND4=%u WP_HOLD_high=%u (IOM-only)\r\n",
+        (unsigned)mb8_nand_board.mspi,
+        (unsigned)mb8_nand_board.iom,
+        (unsigned)mb8_nand_board.cs_channel,
+        (unsigned)mb8_nand_board.clock_hz,
+        (unsigned)d->selected_hz,
+        (unsigned)(WATCH_NAND_MSPI_QUAD ? 12000000u : mb8_nand_board.clock_hz),
+        (unsigned)mb8_nand_board.profile,
+        (unsigned)mb8_nand_board.mspi_clkond4,
+        (unsigned)mb8_nand_board.wp_hold_high_confirmed);
+    mb8_storage_log(
+        "[NAND cfg] GPIO/function: IO0=%u/%u IO1=%u/%u IO2=%u/%u IO3=%u/%u SCK=%u/%u CS=%u/%u\r\n",
+        (unsigned)mb8_nand_board.mosi_pin,
+        (unsigned)mb8_nand_board.mosi_func,
+        (unsigned)mb8_nand_board.miso_pin,
+        (unsigned)mb8_nand_board.miso_func,
+        (unsigned)mb8_nand_board.io2_pin,
+        (unsigned)mb8_nand_board.io2_func,
+        (unsigned)mb8_nand_board.io3_pin,
+        (unsigned)mb8_nand_board.io3_func,
+        (unsigned)mb8_nand_board.sck_pin,
+        (unsigned)mb8_nand_board.sck_func,
+        (unsigned)mb8_nand_board.cs_pin,
+        (unsigned)mb8_nand_board.cs_func);
+    if (d->pin_valid)
+    {
+        mb8_storage_log("[NAND bus] failing signal=%s GPIO=%u selector=%u\r\n",
+            d->signal,
+            (unsigned)d->pin,
+            (unsigned)d->selector);
+        if (d->matrix_valid)
+            mb8_storage_log(
+                "[NAND bus] SDK function enum expected=%u actual=%u; expected MSPI%u signal=%s (SCK lane8 or4, CS=NCE)\r\n",
+                (unsigned)d->expected_fn,
+                (unsigned)d->actual_fn,
+                (unsigned)mb8_nand_board.mspi,
+                d->signal);
+    }
+}
+
 static void startup_worker(void *unused)
 {
     (void)unused;
     while (!watch_gpu_ready)
         vTaskDelay(pdMS_TO_TICKS(10));
-    am_util_stdio_printf("[NAND] test-write request=%u (default0); actual writes also require "
-                         "confirmed provisioned partition + authorization\r\n",
+    mb8_storage_log("[NAND] test-write request=%u (default0); actual writes also require "
+                    "confirmed provisioned partition + authorization\r\n",
         (unsigned)WATCH_NAND_TEST_WRITE);
-    am_util_stdio_printf(
-        "[NAND] initial phase: RO; volatile reset/QE/ECC setup only; no protection unlock, "
-        "program, erase or format. Bring-up clock12MHz;48MHz requires board validation.\r\n");
+    mb8_storage_log("[NAND] stock MiBand8 initial phase: RO; volatile reset/QE/ECC setup only; "
+                    "no protection unlock, program, erase or format.\r\n");
+    mb8_storage_log("[NAND] clock: probe=12000000Hz target=%uHz after E5 A1 + QE/ECC; "
+                    "engineering selection, NOT recovered Xiaomi operating clock\r\n",
+        (unsigned)mb8_nand_board.clock_hz);
     if (mb8_storage_probe_only() < 0)
     {
-        am_util_stdio_printf("[NAND] probe SKIP/FAIL: %s\r\n", mb8_storage_status());
+        mb8_storage_log("[NAND] probe SKIP/FAIL: %s\r\n", mb8_storage_status());
+        report_bus_failure();
         report();
 #if WATCH_NAND_STARTUP_TESTS
-        am_util_stdio_printf("[NAND test] RO checks SKIP: probe/electrical guards failed\r\n");
+        mb8_storage_log(
+            "[NAND test] RO checks SKIP: bus initialization or runtime chip identity failed\r\n");
 #endif
     }
     else
     {
+#if WATCH_NAND_STARTUP_TESTS
+        mb8_storage_startup_raw_tests();
+#endif
         if (mb8_storage_mount(true) < 0)
         {
-            am_util_stdio_printf("[NAND] RO mount SKIP/FAIL: %s\r\n", mb8_storage_status());
+            mb8_storage_log("[NAND] RO mount SKIP/FAIL: %s\r\n", mb8_storage_status());
+            report_bus_failure();
             report();
 #if WATCH_NAND_STARTUP_TESTS
-            am_util_stdio_printf(
+            mb8_storage_log(
                 "[NAND test] RO checks SKIP: no confirmed readable YAFFS partition\r\n");
 #endif
         }
@@ -102,32 +172,35 @@ static void startup_worker(void *unused)
 #endif
             int closed = mb8_storage_unmount();
             if (closed < 0)
-                am_util_stdio_printf("[NAND] RO unmount FAIL: %s\r\n", mb8_storage_status());
+                mb8_storage_log("[NAND] RO unmount FAIL: %s\r\n", mb8_storage_status());
 #if WATCH_NAND_STARTUP_TESTS && WATCH_NAND_TEST_WRITE
             if (closed == 0 && mb8_nand_board.writes_authorized &&
                 mb8_nand_board.yaffs_provisioned_confirmed)
             {
                 if (mb8_storage_mount(false) < 0)
-                    am_util_stdio_printf(
-                        "[NAND test] write SKIP/FAIL: %s\r\n", mb8_storage_status());
+                    mb8_storage_log("[NAND test] write SKIP/FAIL: %s\r\n", mb8_storage_status());
                 else
                 {
                     mb8_storage_startup_write_test();
                     report();
                     if (mb8_storage_unmount() < 0)
-                        am_util_stdio_printf(
+                        mb8_storage_log(
                             "[NAND test] RW unmount FAIL: %s\r\n", mb8_storage_status());
                 }
             }
             else
-                am_util_stdio_printf(
+                mb8_storage_log(
                     "[NAND test] write SKIP: authorization absent or RO close failed\r\n");
 #endif
         }
     }
 #if WATCH_NAND_STARTUP_TESTS && !WATCH_NAND_TEST_WRITE
-    am_util_stdio_printf("[NAND test] write/delete SKIP: WATCH_NAND_TEST_WRITE=0\r\n");
+    mb8_storage_log("[NAND test] write/delete SKIP: WATCH_NAND_TEST_WRITE=0\r\n");
 #endif
+    unsigned lost = mb8_storage_log_dropped();
+    if (lost)
+        mb8_storage_log(
+            "[NAND] diagnostic log lines dropped=%u (format/length/UART failure)\r\n", lost);
     /* Keep the owner TaskHandle valid even on failed unmount. All future storage
      * work must be dispatched to this worker, never a second YAFFS client task.
      * No future requests are scheduled by this one-shot startup diagnostic. */
@@ -142,6 +215,6 @@ void mb8_storage_startup(void)
     /* Called at the END of mcu_init, after UART and Nema/shared-SRAM setup. */
     if (xTaskCreate(startup_worker, "NAND storage", 1536, NULL, tskIDLE_PRIORITY + 1, &worker) !=
         pdPASS)
-        am_util_stdio_printf(
+        mb8_storage_log(
             "[NAND] filesystem used / total - free: unavailable: worker allocation failed\r\n");
 }

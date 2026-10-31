@@ -242,17 +242,11 @@ int mb8_storage_probe_only(void)
         status_text = "ID-only probe requires the storage worker and no mounted filesystem";
         return -1;
     }
-    if (!mb8_nand_board.pinout_confirmed || !mb8_nand_board.voltage_confirmed ||
-        !mb8_nand_board.part_geometry_confirmed)
-    {
-        status_text = "electrical/pinout/part confirmations missing; no hardware touched";
-        return -1;
-    }
     struct ds35_bus bus;
     int             r = mb8_nand_bus_open(&bus);
     if (r < 0)
     {
-        status_text = "dedicated bus/pull-up/pin/clock guards failed; no probe";
+        status_text = mb8_nand_bus_diagnostic()->reason;
         return -1;
     }
     /* Zero count is an empty array-access range, NOT a guessed partition. */
@@ -327,6 +321,32 @@ int mb8_storage_read_sample(uint32_t relative_page, void *data, size_t bytes)
     return ds35_read(&nand, page, data, bytes, NULL, 0);
 }
 
+#if WATCH_NAND_STARTUP_TESTS
+int mb8_storage_raw_read_pair(uint32_t physical_page, void *first, void *second, size_t bytes)
+{
+    if (!claim_worker() || dev.is_mounted || !first || !second || !bytes || bytes > 256 ||
+        physical_page >= DS35_BLOCKS * DS35_PAGES_PER_BLOCK)
+        return DS35_EINVAL;
+    struct ds35_bus bus;
+    int             r = mb8_nand_bus_open(&bus);
+    if (r < 0)
+        return r;
+    /* Explicit RAW diagnostic block, not a filesystem partition. No writable
+     * handle escapes; no allow_writes/PROGRAM/ERASE/BBM-mark/YAFFS calls here. */
+    r = ds35_probe(&nand, &bus, physical_page / DS35_PAGES_PER_BLOCK, 1);
+    if (r == DS35_OK)
+        r = ds35_check_bad(&nand, physical_page / DS35_PAGES_PER_BLOCK);
+    if (r == DS35_OK)
+        r = ds35_read(&nand, physical_page, first, bytes, NULL, 0);
+    if (r >= 0)
+        r = ds35_read(&nand, physical_page, second, bytes, NULL, 0);
+    int closed = ds35_shutdown(&nand);
+    mb8_nand_bus_close();
+    /* A failed feature restore must never be mislabeled as a harmless BAD skip. */
+    return closed < 0 ? closed : r;
+}
+#endif
+
 int mb8_storage_mount(bool read_only)
 {
     if (!task_context())
@@ -338,12 +358,11 @@ int mb8_storage_mount(bool read_only)
         return -1;
     if (dev.is_mounted)
         return -1;
-    if (!mb8_nand_board.pinout_confirmed || !mb8_nand_board.voltage_confirmed ||
-        !mb8_nand_board.part_geometry_confirmed || !mb8_nand_board.partition_confirmed ||
-        mb8_nand_board.first_block >= DS35_BLOCKS || mb8_nand_board.block_count < 16 ||
+    if (!mb8_nand_board.partition_confirmed || mb8_nand_board.first_block >= DS35_BLOCKS ||
+        mb8_nand_board.block_count < 16 ||
         mb8_nand_board.block_count > DS35_BLOCKS - mb8_nand_board.first_block)
     {
-        status_text = "NAND pins/1.8V/part geometry/partition unconfirmed; no hardware touched";
+        status_text = "filesystem partition/bounds unconfirmed; no filesystem scan attempted";
         return -1;
     }
     if (!mb8_nand_board.yaffs_provisioned_confirmed)
@@ -368,7 +387,7 @@ int mb8_storage_mount(bool read_only)
     int             r = mb8_nand_bus_open(&bus);
     if (r < 0)
     {
-        status_text = "NAND dedicated bus/pin/clock configuration unconfirmed or unavailable";
+        status_text = mb8_nand_bus_diagnostic()->reason;
         return -1;
     }
     r = ds35_probe(&nand, &bus, mb8_nand_board.first_block, mb8_nand_board.block_count);

@@ -7,7 +7,8 @@
 #include "yaffsfs.h"
 #include "yaffs_osglue.h"
 #include "mb8_nand_board.h"
-#include "am_util.h"
+#include "ds35m1gb.h"
+#include "mb8_storage_log.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include <errno.h>
@@ -29,7 +30,7 @@ static void file_read_test(void)
     yaffs_DIR *dir = yaffs_opendir("/nand");
     if (!dir)
     {
-        am_util_stdio_printf("[NAND test] directory FAIL errno=%d\r\n", yaffs_get_error());
+        mb8_storage_log("[NAND test] directory FAIL errno=%d\r\n", yaffs_get_error());
         return;
     }
     unsigned             seen   = 0;
@@ -44,7 +45,7 @@ static void file_read_test(void)
         if (!e)
         {
             if (yaffs_get_error())
-                am_util_stdio_printf("[NAND test] readdir FAIL errno=%d\r\n", yaffs_get_error());
+                mb8_storage_log("[NAND test] readdir FAIL errno=%d\r\n", yaffs_get_error());
             break;
         }
         seen++;
@@ -57,7 +58,7 @@ static void file_read_test(void)
             continue;
         if (yaffs_lstat(path, &st) < 0)
         {
-            am_util_stdio_printf("[NAND test] lstat FAIL errno=%d\r\n", yaffs_get_error());
+            mb8_storage_log("[NAND test] lstat FAIL errno=%d\r\n", yaffs_get_error());
             continue;
         }
         if (!S_ISREG(st.st_mode) || st.st_size <= 0)
@@ -65,27 +66,50 @@ static void file_read_test(void)
         int fd = yaffs_open(path, O_RDONLY, 0);
         if (fd < 0)
         {
-            am_util_stdio_printf("[NAND test] read-open FAIL errno=%d\r\n", yaffs_get_error());
+            mb8_storage_log("[NAND test] read-open FAIL errno=%d\r\n", yaffs_get_error());
             continue;
         }
         int  a       = yaffs_read(fd, first, sizeof(first));
         bool seek_ok = yaffs_lseek(fd, 0, SEEK_SET) == 0;
         int  b       = seek_ok ? yaffs_read(fd, second, sizeof(second)) : -1;
         bool ok      = a > 0 && b == a && !memcmp(first, second, (size_t)a);
-        am_util_stdio_printf("[NAND test] existing-file RO repeat %s bytes=%d checksum=%08x\r\n",
+        mb8_storage_log("[NAND test] existing-file RO repeat %s bytes=%d checksum=%08x\r\n",
             ok ? "PASS" : "FAIL",
             a,
             ok ? (unsigned)checksum(first, (size_t)a) : 0u);
         if (yaffs_close(fd) < 0)
-            am_util_stdio_printf("[NAND test] RO close FAIL errno=%d\r\n", yaffs_get_error());
+            mb8_storage_log("[NAND test] RO close FAIL errno=%d\r\n", yaffs_get_error());
         tested = true;
         break;
     }
     if (yaffs_closedir(dir) < 0)
-        am_util_stdio_printf("[NAND test] closedir FAIL errno=%d\r\n", yaffs_get_error());
-    am_util_stdio_printf("[NAND test] directory read completed entries<=%u; file %s\r\n",
+        mb8_storage_log("[NAND test] closedir FAIL errno=%d\r\n", yaffs_get_error());
+    mb8_storage_log("[NAND test] directory read completed entries<=%u; file %s\r\n",
         seen,
         tested ? "attempted" : "SKIP (no nonempty regular file in first16 entries)");
+}
+
+void mb8_storage_startup_raw_tests(void)
+{
+    const uint32_t pages[] = {0, 1, DS35_BLOCKS * DS35_PAGES_PER_BLOCK - 1};
+    for (unsigned i = 0; i < sizeof(pages) / sizeof(pages[0]); i++)
+    {
+        int r = mb8_storage_raw_read_pair(pages[i], first, second, sizeof(first));
+        if (r == DS35_BAD)
+        {
+            mb8_storage_log(
+                "[NAND test] RAW physical-page%u SKIP: factory/runtime bad block; no data read\r\n",
+                (unsigned)pages[i]);
+            continue;
+        }
+        bool ok = r >= 0 && !memcmp(first, second, sizeof(first));
+        mb8_storage_log(
+            "[NAND test] RAW physical-page%u 256B repeat %s rc=%d checksum=%08x; NOT filesystem/free-space inference\r\n",
+            (unsigned)pages[i],
+            ok ? "PASS" : "FAIL",
+            r,
+            ok ? (unsigned)checksum(first, sizeof(first)) : 0u);
+    }
 }
 
 void mb8_storage_startup_read_tests(void)
@@ -96,7 +120,7 @@ void mb8_storage_startup_read_tests(void)
         int  a  = mb8_storage_read_sample(pages[i], first, sizeof(first));
         int  b  = a >= 0 ? mb8_storage_read_sample(pages[i], second, sizeof(second)) : a;
         bool ok = a >= 0 && b >= 0 && !memcmp(first, second, sizeof(first));
-        am_util_stdio_printf("[NAND test] partition-page%u RO repeat %s rc=%d/%d checksum=%08x\r\n",
+        mb8_storage_log("[NAND test] partition-page%u RO repeat %s rc=%d/%d checksum=%08x\r\n",
             (unsigned)pages[i],
             ok ? "PASS" : "SKIP/FAIL",
             a,
@@ -118,7 +142,7 @@ void mb8_storage_startup_write_test(void)
     if (!mb8_nand_board.writes_authorized || !mb8_nand_board.yaffs_provisioned_confirmed ||
         mb8_storage_get_usage(&usage) < 0 || usage.read_only)
     {
-        am_util_stdio_printf("[NAND test] write SKIP: no confirmed writable YAFFS mount\r\n");
+        mb8_storage_log("[NAND test] write SKIP: no confirmed writable YAFFS mount\r\n");
         return;
     }
     /* One <=1024B exclusive file, bounded collision attempts. Never overwrite
@@ -141,7 +165,7 @@ void mb8_storage_startup_write_test(void)
     }
     if (!created)
     {
-        am_util_stdio_printf(
+        mb8_storage_log(
             "[NAND test] exclusive create SKIP/FAIL errno=%d; no existing file changed\r\n",
             yaffs_get_error());
         return;
@@ -153,14 +177,13 @@ void mb8_storage_startup_write_test(void)
         int n = yaffs_write(fd, first, sizeof(first));
         if (n != (int)sizeof(first))
         {
-            am_util_stdio_printf(
-                "[NAND test] write FAIL bytes=%d errno=%d\r\n", n, yaffs_get_error());
+            mb8_storage_log("[NAND test] write FAIL bytes=%d errno=%d\r\n", n, yaffs_get_error());
             ok = false;
         }
     }
     if (ok && yaffs_fsync(fd) < 0)
     {
-        am_util_stdio_printf("[NAND test] fsync FAIL errno=%d\r\n", yaffs_get_error());
+        mb8_storage_log("[NAND test] fsync FAIL errno=%d\r\n", yaffs_get_error());
         ok = false;
     }
     /* Warm unmount/remount discards ALL YAFFS caches. fsync + same-fd read
@@ -168,7 +191,7 @@ void mb8_storage_startup_write_test(void)
      * This tests subsequent NAND reads, NOT arbitrary power-cut durability. */
     if (yaffs_close(fd) < 0)
     {
-        am_util_stdio_printf("[NAND test] pre-readback close FAIL errno=%d\r\n", yaffs_get_error());
+        mb8_storage_log("[NAND test] pre-readback close FAIL errno=%d\r\n", yaffs_get_error());
         ok = false;
     }
     fd = -1;
@@ -176,7 +199,7 @@ void mb8_storage_startup_write_test(void)
     {
         if (mb8_storage_unmount() < 0 || mb8_storage_mount(true) < 0)
         {
-            am_util_stdio_printf("[NAND test] warm RO remount FAIL: %s; residual test path=%s\r\n",
+            mb8_storage_log("[NAND test] warm RO remount FAIL: %s; residual test path=%s\r\n",
                 mb8_storage_status(),
                 path);
             return;
@@ -184,8 +207,7 @@ void mb8_storage_startup_write_test(void)
         fd = yaffs_open(path, O_RDONLY, 0);
         if (fd < 0)
         {
-            am_util_stdio_printf(
-                "[NAND test] reopened media read FAIL errno=%d\r\n", yaffs_get_error());
+            mb8_storage_log("[NAND test] reopened media read FAIL errno=%d\r\n", yaffs_get_error());
             ok = false;
         }
     }
@@ -199,14 +221,14 @@ void mb8_storage_startup_write_test(void)
                 if (second[i] != pattern(offset + i))
                     ok = false;
         if (!ok)
-            am_util_stdio_printf("[NAND test] readback FAIL offset=%u bytes=%d errno=%d\r\n",
+            mb8_storage_log("[NAND test] readback FAIL offset=%u bytes=%d errno=%d\r\n",
                 offset,
                 n,
                 yaffs_get_error());
     }
     if (fd >= 0 && yaffs_close(fd) < 0)
     {
-        am_util_stdio_printf("[NAND test] close FAIL errno=%d\r\n", yaffs_get_error());
+        mb8_storage_log("[NAND test] close FAIL errno=%d\r\n", yaffs_get_error());
         ok = false;
     }
     /* Remount writable only if readback actually transitioned to RO. */
@@ -214,7 +236,7 @@ void mb8_storage_startup_write_test(void)
     if (mb8_storage_get_usage(&current) < 0 ||
         (current.read_only && (mb8_storage_unmount() < 0 || mb8_storage_mount(false) < 0)))
     {
-        am_util_stdio_printf("[NAND test] cleanup mount FAIL: %s; residual test path=%s\r\n",
+        mb8_storage_log("[NAND test] cleanup mount FAIL: %s; residual test path=%s\r\n",
             mb8_storage_status(),
             path);
         return;
@@ -222,7 +244,7 @@ void mb8_storage_startup_write_test(void)
     /* Cleanup only the file successfully exclusively created by THIS call. */
     if (yaffs_unlink(path) < 0)
     {
-        am_util_stdio_printf(
+        mb8_storage_log(
             "[NAND test] delete FAIL errno=%d; residual test path=%s\r\n", yaffs_get_error(), path);
         ok = false;
     }
@@ -232,19 +254,18 @@ void mb8_storage_startup_write_test(void)
         int               absent = yaffs_lstat(path, &st);
         if (absent != -1 || yaffs_get_error() != -ENOENT)
         {
-            am_util_stdio_printf(
+            mb8_storage_log(
                 "[NAND test] absence verification FAIL errno=%d\r\n", yaffs_get_error());
             ok = false;
         }
         if (yaffs_sync("/nand") < 0)
         {
-            am_util_stdio_printf("[NAND test] deletion sync FAIL errno=%d\r\n", yaffs_get_error());
+            mb8_storage_log("[NAND test] deletion sync FAIL errno=%d\r\n", yaffs_get_error());
             ok = false;
         }
     }
-    am_util_stdio_printf(
-        "[NAND test] exclusive1024B write/fsync/warm-remount-media-read/delete %s; "
-        "unlink is logical deletion, NOT guaranteed physical erase\r\n",
+    mb8_storage_log("[NAND test] exclusive1024B write/fsync/warm-remount-media-read/delete %s; "
+                    "unlink is logical deletion, NOT guaranteed physical erase\r\n",
         ok ? "PASS" : "FAIL");
 }
 #endif
