@@ -144,9 +144,24 @@ space. Difference includes metadata/bad/checkpoint/other unavailable space,
 NOT sum of file payload. Negative/inconsistent APIs ->unavailable, never wrap.
 
 Temporary tests in mb8_storage_startup_tests.c/.h: explicit raw samples above;
-if compatible YAFFS mounted, <=3partition pages*256B twice and <=16root entries,
-at most one existing nonempty regular file prefix<=256B twice, no content/name
-dump or symlink traversal. To disable/remove these LATER but KEEP report:
+if compatible read-only YAFFS mounted, <=3partition pages*256B twice, then an
+indented /nand tree of all accessible files/directories with byte sizes.
+Names are quoted/escaped (controls/non-ASCII as \xHH, quotes/backslashes escaped);
+long escaped names use labelled continuation fragments, never silent truncation.
+Symlinks are labelled, never followed; special files are not opened. At most
+one nonempty regular file anywhere in the tree gets a <=256B repeat read;
+no file contents printed. This is not a forensic dump or stock-layout guess.
+Iterative DFS uses ONE directory context (YAFFS limit2), no recursive stack.
+Reopened parents replay saved cursors; sole worker/RO mount prevents mutation.
+Safety limits: path768 bytes including terminator, depth24 below root,
+65536 entries and262144 total readdir calls (including parent replay). Ancestor
+inode/device cycles, malformed names, any limit/API/log error explicitly report
+INCOMPLETE; no first16-entry truncation. Unreachable subtrees are skipped, not
+claimed complete. Yield1tick every16 readdir calls and every directory transition.
+Static temporary workspace is about2.2KiB, not worker stack; traversal may take
+time and parent replay adds work on wide/deep trees. Unknown partition/layout
+still means explicit mount/tree SKIP, not raw filename inference.
+To disable/remove these LATER but KEEP report:
   ./flash.bat WATCH_NAND_STARTUP_TESTS=0 WATCH_NAND_TEST_WRITE=0
 Then the temporary .c/.h can be deleted; permanent worker/report remain.
 
