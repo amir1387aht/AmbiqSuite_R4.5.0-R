@@ -12,7 +12,7 @@
 
 static void    *mspi;
 static bool     poisoned, quad_enabled;
-static unsigned current_width, current_address_bytes;
+static unsigned current_width, current_address_bytes, aux_width;
 static uint32_t target_divider, current_divider;
 static uint32_t tcb[256] __attribute__((section(".shared.nand"), aligned(32)));
 /* Bounded DMA bounce: caller may use TCM or an unaligned stack buffer. */
@@ -88,6 +88,7 @@ void mb8_nand_mspi_close(void)
     current_width         = 0;
     current_address_bytes = 0;
     current_divider       = 0;
+    aux_width             = 0;
 }
 
 /* The worker serializes complete CS transactions. Clock and lane changes are
@@ -95,6 +96,29 @@ void mb8_nand_mspi_close(void)
  * Keep every serial control at the known probe clock, including B0/C0 accesses
  * between quad cache reads. A matching HAL status does not prove data integrity.
  */
+static int require_bus_idle(void)
+{
+    /* Vendor HAL documents DMATIP clearing only after the bus transaction ends.
+     * A completion callback alone must not allow GPIO drive over a live read.
+     * PIO is blocking and checked; CONT/XIP are never enabled on this controller.
+     */
+    unsigned waited = 0;
+    while (MSPIn(mb8_nand_board.mspi)->DMASTAT_b.DMATIP && waited < 1000)
+    {
+        am_util_delay_us(1);
+        waited++;
+    }
+    if (MSPIn(mb8_nand_board.mspi)->DMASTAT_b.DMATIP)
+    {
+        mb8_nand_diag_fail(DS35_TIMEOUT,
+            "bus-DMA-idle",
+            "DMATIP stayed active; requested phase/pin change refused");
+        abort_controller();
+        return DS35_TIMEOUT;
+    }
+    return DS35_OK;
+}
+
 static int select_clock(uint32_t divider, const char *stage)
 {
     if (current_divider == divider)
@@ -111,8 +135,68 @@ static int select_clock(uint32_t divider, const char *stage)
     return DS35_OK;
 }
 
+/* WP#/HOLD# must be inactive in serial phases. MSPI serial PADOUTEN releases
+ * IO2/3; an unpulled peripheral pad does not guarantee HIGH after a quad read.
+ * Preload GPIO latches before selecting push-pull GPIO, only with CS inactive.
+ * Before quad, remux to MSPI while its SERIAL output mask still releases IO2/3.
+ * No forced GPIO output or pull remains during any quad read/program transfer.
+ */
+static int configure_aux_pins(unsigned width)
+{
+    if (aux_width == width)
+        return DS35_OK;
+    int r = require_bus_idle();
+    if (r < 0)
+        return r;
+    const uint32_t    pins[]          = {mb8_nand_board.io2_pin, mb8_nand_board.io3_pin};
+    const uint32_t    functions[]     = {mb8_nand_board.io2_func, mb8_nand_board.io3_func};
+    const char *const labels[]        = {"IO2/WP#", "IO3/HOLD#"};
+    const char *const latch_stages[]  = {"serial-WP-latch-high", "serial-HOLD-latch-high"};
+    const char *const serial_stages[] = {"serial-WP-GPIO-high", "serial-HOLD-GPIO-high"};
+    const char *const quad_stages[]   = {"quad-IO2-MSPI-mux", "quad-IO3-MSPI-mux"};
+    for (unsigned i = 0; i < 2; i++)
+    {
+        am_hal_gpio_pincfg_t pin = {0};
+        uint32_t             status;
+        const char          *stage;
+        if (width == 1)
+        {
+            status = am_hal_gpio_state_write(pins[i], AM_HAL_GPIO_OUTPUT_SET);
+            if (status)
+            {
+                mb8_nand_diag_pin(labels[i], pins[i], 0, false, 0, 0);
+                mb8_nand_diag_hal(status, latch_stages[i]);
+                abort_controller();
+                return DS35_IO;
+            }
+            pin   = (am_hal_gpio_pincfg_t)AM_HAL_GPIO_PINCFG_OUTPUT;
+            stage = serial_stages[i];
+        }
+        else
+        {
+            pin.GP.cfg_b.uFuncSel = functions[i];
+            stage                 = quad_stages[i];
+        }
+        pin.GP.cfg_b.eDriveStrength = AM_HAL_GPIO_PIN_DRIVESTRENGTH_0P5X;
+        status                      = am_hal_gpio_pinconfig(pins[i], pin);
+        if (status)
+        {
+            mb8_nand_diag_pin(labels[i], pins[i], pin.GP.cfg_b.uFuncSel, false, 0, 0);
+            mb8_nand_diag_hal(status, stage);
+            abort_controller();
+            return DS35_IO;
+        }
+    }
+    aux_width = width;
+    am_util_delay_us(1); /* Inactive-CS settling margin, not a part tFEAT claim. */
+    return DS35_OK;
+}
+
 static int configure_phase(const struct mb8_nand_mspi_plan *p)
 {
+    int idle = require_bus_idle();
+    if (idle < 0)
+        return idle;
     /* Lower the clock before changing quad to serial. Raise it only after the
      * explicit DEVICE + PIOMIXED + address setup for the next quad DMA is ready.
      */
@@ -121,6 +205,12 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
     uint32_t status = AM_HAL_STATUS_SUCCESS;
     if (current_width != p->data_width)
     {
+        if (p->data_width == 4)
+        {
+            int r = configure_aux_pins(4);
+            if (r < 0)
+                return r;
+        }
         am_hal_mspi_device_e mode;
         if (p->data_width == 4)
             mode = mb8_nand_board.cs_channel ? AM_HAL_MSPI_FLASH_QUAD_CE1_1_1_4
@@ -138,6 +228,12 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
         {
             status = am_hal_mspi_control(mspi, AM_HAL_MSPI_REQ_PIOMIXED_CONFIG, &mode);
             mb8_nand_diag_hal(status, "phase-PIO-mixed-config");
+        }
+        if (!status && p->data_width == 1)
+        {
+            int r = configure_aux_pins(1);
+            if (r < 0)
+                return r;
         }
         if (!status)
             current_width = p->data_width;
@@ -283,6 +379,9 @@ static int quad_ready(void *ctx, bool enabled)
     (void)ctx;
     if (poisoned || !mspi)
         return DS35_NOT_READY;
+    int idle = require_bus_idle();
+    if (idle < 0)
+        return idle;
     /* Arm quad data only after ID/QE/ECC validation, but do not accelerate
      * serial controls. configure_phase selects the target only for quad DMA.
      * Disable also returns to the probe clock before B0 restoration.
@@ -338,6 +437,20 @@ static int validate_pins(const uint32_t *pins, const uint32_t *functions)
             wanted = base + (mb8_nand_board.mspi_clkond4 ? 4 : 8);
         else
             wanted = AM_HAL_PIN_FN_NCE0 + pins[i];
+        if (i == 2 || i == 3)
+        {
+            const am_hal_gpio_pincfg_t output        = AM_HAL_GPIO_PINCFG_OUTPUT;
+            uint32_t                   gpio_function = output.GP.cfg_b.uFuncSel;
+            uint16_t                   gpio_actual   = am_hal_pin_fn_list[pins[i]][gpio_function];
+            if (gpio_actual != AM_HAL_PIN_FN_GPIO)
+            {
+                mb8_nand_diag_pin(
+                    signals[i], pins[i], gpio_function, true, AM_HAL_PIN_FN_GPIO, gpio_actual);
+                return mb8_nand_diag_fail(DS35_NOT_READY,
+                    "aux-GPIO-matrix",
+                    "IO2/3 cannot select SDK GPIO output for serial inactive HIGH");
+            }
+        }
         uint16_t actual = am_hal_pin_fn_list[pins[i]][functions[i]];
         if (actual != wanted)
         {
@@ -450,6 +563,9 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
         mb8_nand_mspi_close();
         return DS35_IO;
     }
+    aux_width = 0;
+    if ((r = configure_aux_pins(1)) < 0)
+        return r;
     mb8_nand_diag_active_clock(12000000u);
     current_width         = 1;
     current_address_bytes = 2;

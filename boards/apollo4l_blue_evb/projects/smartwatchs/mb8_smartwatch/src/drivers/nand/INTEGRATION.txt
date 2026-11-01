@@ -91,6 +91,32 @@ are updated only after success; any failed transition retains its first error
 and poisons the transport. No read retry, forced B0 match or OTP operation.
 This conservative mitigation needs an on-watch retest; no claim all reads work.
 
+SERIAL AUXILIARY WP#/HOLD# LEVELS
+The next watch log reached both256B quad reads with a matching repeat comparison,
+but shutdown GET-B0 returnedff instead of08 (defined-diffD1). That is NOT valid
+restoration and still fails. Matching repeats do not authenticate flash contents.
+Rev07 sections1.2/2.5/2.6 say HOLD# low with CS# low makes SO high-impedance and
+ignores SI/SCLK; the host must not drive IO2/3 during x4 cache reads. They do NOT
+establish that QE globally disables HOLD#. Existing MSPI serial PADOUTEN releases
+IO2/3 while their pin configuration had no pulls; no guaranteed inactive level
+was established by software after a quad transaction. This is a plausible cause
+of ff readback, NOT proven on-watch and not proof of OTP state changing.
+Serial now preloads GPIO output latches HIGH before enabling GPIO push-pull on
+WP#/IO2 and HOLD#/IO3 (stock76/77, SDK selector3 validated before hardware access).
+This happens before the initial probe and before every quad->serial command,
+including B0 restoration/QE clearing. GPIO HIGH is retained after normal close.
+Before quad, both pins return to their board MSPI functions with GPIO output
+DISABLED, no forced output and no pull; this remux happens while SERIAL MSPI
+PADOUTEN still releases the lines, before quad mode/CS/data. No GPIO drive remains
+during quad reads. Existing12MHz serial/48MHz data clocks are unchanged.
+The worker has completed checked blocking PIO/non-continuing DMA before changing
+phase. A shared bounded1000us DMATIP idle guard runs BEFORE any phase clock/mode/
+aux mux change (also initial aux setup and quad arming/shutdown). An active DMA
+timeout poisons/records before any such reconfiguration or GPIO drive.
+GPIO latch/mux failures retain their first HAL status and signal/stage. Partial
+setup never starts a NAND command. No retry/maskedff/OTP access/erase/program or
+partition/format changes. New on-watch tests are still required.
+
 PROJECT DRIVER LAYOUT / RAM LOGGING
 Project NAND sources, YAFFS and notices live under src/drivers/nand; local GPU
 adapters/fonts live under src/drivers/gpu. SDK third-party sources stay in place.
