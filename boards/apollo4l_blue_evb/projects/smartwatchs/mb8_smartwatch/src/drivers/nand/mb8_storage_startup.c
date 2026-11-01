@@ -220,9 +220,16 @@ static void startup_worker(void *unused)
         (unsigned)WATCH_NAND_TEST_WRITE);
     mb8_storage_log("[NAND] stock MiBand8 initial phase: RO; volatile reset/QE/ECC setup only; "
                     "no protection unlock, program, erase or format.\r\n");
-    mb8_storage_log("[NAND] clock: probe=12000000Hz target=%uHz after E5 A1 + QE/ECC; "
-                    "engineering selection, NOT recovered Xiaomi operating clock\r\n",
+#if WATCH_NAND_MSPI_QUAD
+    mb8_storage_log(
+        "[NAND] clock: probe/control=12000000Hz quad-data-target=%uHz after E5 A1 + QE/ECC; "
+        "engineering selection, NOT recovered Xiaomi operating clock\r\n",
         (unsigned)mb8_nand_board.clock_hz);
+#else
+    mb8_storage_log("[NAND] IOM x1 clock target=%uHz; fallback controller/pins must be configured; "
+                    "no automatic MSPI fallback\r\n",
+        (unsigned)mb8_nand_board.clock_hz);
+#endif
     if (mb8_storage_probe_only() < 0)
     {
         mb8_storage_log("[NAND] probe SKIP/FAIL: %s\r\n", mb8_storage_status());

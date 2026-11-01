@@ -15,8 +15,9 @@ is NOT a measured voltage/resistor/timing claim for every MiBand8 revision.
 
 Startup creates one low-priority worker at the END of mcu_init, after UART,
 GPU/Nema/shared-SRAM and sensor initialization; it also waits watch_gpu_ready.
-Controller initially probes at12MHz. ONLY AFTER E5 A1 ID + QE/ECC readback does
-it select CLOCK_HZ, now48000000u by default.48MHz is our in-spec engineering
+Every serial PIO control stays at12MHz, including B0/C0/row commands between
+quad data transfers. ONLY AFTER E5 A1 ID + QE/ECC readback may quad DMA select
+CLOCK_HZ, now48000000u by default.48MHz is our in-spec engineering
 selection, NOT a recovered/measured Xiaomi operating frequency. Troubleshoot by
 changing ONLY MB8_NAND_CLOCK_HZ to12000000u in mb8_nand_board.h; no hidden flags.
 The exact1.8V DS35M1GB limit is83MHz. Apollo4l supported dividers jump48->96MHz,
@@ -33,7 +34,7 @@ Necessary reset/QE/ECC volatile feature setup/restoration is disclosed; RO never
 unlocks protection or performs main/OOB PROGRAM/ERASE/mark or filesystem writes.
 
 After successful identity, expected log shape includes:
-  [NAND] clock: probe=12000000Hz target=48000000Hz after E5 A1 + QE/ECC; ...
+  [NAND] clock: probe/control=12000000Hz quad-data-target=48000000Hz after E5 A1 + QE/ECC; ...
   [NAND test] RAW physical-page0 256B repeat PASS rc=... checksum=...
   [NAND test] RAW physical-page1 ...
   [NAND test] RAW physical-page65535 ...
@@ -75,6 +76,29 @@ aligned shared bounce and requested bytecount remain unchanged. This evidence
 patch does NOT replace quad transport, bypass BBM/ECC, alter data clock48MHz,
 change pads/drive strength, round reads, guess a partition, or program/erase.
 
+SERIAL / QUAD CLOCK TRANSITIONS
+A later watch log showed a DEFINED bit mismatch: B0 expected0x0c, observed0x86,
+XOR8a/defined-diff80 after quad marker reads, at48MHz serial PIO. It is NOT
+reserved-only and remains fatal; this log does not prove OTP was programmed.
+It also showed unexpected earlier ECC/QE state. No failed HAL call guarantees
+readback correctness. The exact electrical/mode root cause remains unproven.
+All serial PIO now uses12MHz, including feature, row and status commands. Only
+quad cache DMA selects the configured48MHz target. Transitions run between
+completed CS transactions: lower clock BEFORE quad->serial DEVICE+PIOMIXED;
+set DEVICE+PIOMIXED/address BEFORE raising clock for the next quad DMA. Normal
+HAL CLOCK_CONFIG controls divider, sampling edges and DMA thresholds. Caches
+are updated only after success; any failed transition retains its first error
+and poisons the transport. No read retry, forced B0 match or OTP operation.
+This conservative mitigation needs an on-watch retest; no claim all reads work.
+
+PROJECT DRIVER LAYOUT / RAM LOGGING
+Project NAND sources, YAFFS and notices live under src/drivers/nand; local GPU
+adapters/fonts live under src/drivers/gpu. SDK third-party sources stay in place.
+Makefile excludes both directories from recursive generic APP_SRC, then selects
+PORT_SRC/NAND_SRC explicitly so disabled NAND and GPU fallback remain effective.
+The two-second RAM monitor/task has been removed. The one-time RAM startup
+snapshot remains, as do FPS/profiling and temporary NAND startup tests.
+
 PRECISE BUS DIAGNOSTICS / UART
 mb8_nand_diagnostics.c records a single-worker snapshot, no printf in HAL/IRQ.
 An open failure prints backend/stage/reason, DS35 result, first HAL status(decimal
@@ -94,7 +118,7 @@ CLOCK_CONFIG BEFORE SET/GET restoring savedB0 (including QE). Previously those
 commands still ran at the selected48MHz bulk clock, and lowering followed only
 a successful restore. This sequencing correction is conservative; the user's
 E5 A1/status-success +shutdown-failure log does NOT prove its root cause.
-48MHz data/normal-operation clock policy is otherwise unchanged.
+48MHz quad-data clock policy is unchanged; serial controls now always use12MHz.
 Table3.1 defines B0[7,6,4,0] (OTP_PRT/OTP_EN/ECC_EN/QE), maskD1. All B0
 verification now checks EVERY one of those bits; bits5/3/2/1 are reserved, not
 claimed stable, writable, busy or restorable. A watch log showed ECC-off expected
@@ -102,7 +126,7 @@ claimed stable, writable, busy or restorable. A watch log showed ECC-off expecte
 faulted BEFORE any quad cache read. This specific false fault is corrected.
 RMW SET values are unchanged; reserved writes are not claimed effective. Initial
 OTP-mode rejection and all OTP/QE/ECC mismatch failures remain; no OTP access,
-clock/pad/quad changes or new writes are introduced. A0 protection verification
+pad/quad-protocol changes or new writes are introduced. A0 protection verification
 is separate and remains unchanged. No tFEAT/busy wait is specified
 for SET FEATURES; existing1us CS gap exceeds Table4.7 tCS>=100ns. No invented
 feature-program timing or undocumented command/retry is introduced.

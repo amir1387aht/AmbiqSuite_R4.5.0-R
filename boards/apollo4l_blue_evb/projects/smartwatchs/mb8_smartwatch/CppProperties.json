@@ -4,7 +4,7 @@
       "name": "mb8_smartwatch",
       "includePath": [
         "${workspaceRoot}/src/**",
-        "${workspaceRoot}/libs/gpu_port",
+        "${workspaceRoot}/src/drivers/gpu",
         "${workspaceRoot}/../../../../../../third_party/LVGL/lvgl",
         "${workspaceRoot}/../../../../../../third_party/LVGL/ambiq_support"
       ],

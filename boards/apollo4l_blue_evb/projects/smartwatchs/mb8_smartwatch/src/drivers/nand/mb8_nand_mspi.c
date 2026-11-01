@@ -13,7 +13,7 @@
 static void    *mspi;
 static bool     poisoned, quad_enabled;
 static unsigned current_width, current_address_bytes;
-static uint32_t target_divider;
+static uint32_t target_divider, current_divider;
 static uint32_t tcb[256] __attribute__((section(".shared.nand"), aligned(32)));
 /* Bounded DMA bounce: caller may use TCM or an unaligned stack buffer. */
 static uint32_t bounce[(DS35_PAGE + DS35_OOB + 3) / 4]
@@ -87,10 +87,37 @@ void mb8_nand_mspi_close(void)
     quad_enabled          = false;
     current_width         = 0;
     current_address_bytes = 0;
+    current_divider       = 0;
+}
+
+/* The worker serializes complete CS transactions. Clock and lane changes are
+ * made only here, after the preceding blocking PIO or completed DMA returned.
+ * Keep every serial control at the known probe clock, including B0/C0 accesses
+ * between quad cache reads. A matching HAL status does not prove data integrity.
+ */
+static int select_clock(uint32_t divider, const char *stage)
+{
+    if (current_divider == divider)
+        return DS35_OK;
+    am_hal_mspi_clock_e clock  = (am_hal_mspi_clock_e)divider;
+    uint32_t            status = am_hal_mspi_control(mspi, AM_HAL_MSPI_REQ_CLOCK_CONFIG, &clock);
+    if (mb8_nand_diag_hal(status, stage) < 0)
+    {
+        abort_controller();
+        return DS35_IO;
+    }
+    current_divider = divider;
+    mb8_nand_diag_active_clock(96000000u / divider);
+    return DS35_OK;
 }
 
 static int configure_phase(const struct mb8_nand_mspi_plan *p)
 {
+    /* Lower the clock before changing quad to serial. Raise it only after the
+     * explicit DEVICE + PIOMIXED + address setup for the next quad DMA is ready.
+     */
+    if (!p->dma && select_clock(AM_HAL_MSPI_CLK_12MHZ, "serial-control-clock") < 0)
+        return DS35_IO;
     uint32_t status = AM_HAL_STATUS_SUCCESS;
     if (current_width != p->data_width)
     {
@@ -130,6 +157,8 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
         abort_controller();
         return DS35_IO;
     }
+    if (p->dma && select_clock(target_divider, "quad-data-clock") < 0)
+        return DS35_IO;
     return DS35_OK;
 }
 
@@ -254,19 +283,13 @@ static int quad_ready(void *ctx, bool enabled)
     (void)ctx;
     if (poisoned || !mspi)
         return DS35_NOT_READY;
-    /* Enable only after exact ID/main-array/QE/ECC readback. Disable selects
-     * the initial12MHz clock BEFORE restoring B0, also when feature setup
-     * failed but serial transport remains healthy. It sends no NAND command.
+    /* Arm quad data only after ID/QE/ECC validation, but do not accelerate
+     * serial controls. configure_phase selects the target only for quad DMA.
+     * Disable also returns to the probe clock before B0 restoration.
      */
-    am_hal_mspi_clock_e clock =
-        (am_hal_mspi_clock_e)(enabled ? target_divider : AM_HAL_MSPI_CLK_12MHZ);
-    uint32_t status = am_hal_mspi_control(mspi, AM_HAL_MSPI_REQ_CLOCK_CONFIG, &clock);
-    if (mb8_nand_diag_hal(status, enabled ? "clock-up-after-QE" : "shutdown-clock-down") < 0)
-    {
-        abort_controller();
+    if (select_clock(
+            AM_HAL_MSPI_CLK_12MHZ, enabled ? "quad-arm-serial-clock" : "shutdown-clock-down") < 0)
         return DS35_IO;
-    }
-    mb8_nand_diag_active_clock(enabled ? mb8_nand_board.clock_hz : 12000000u);
     quad_enabled = enabled;
     return DS35_OK;
 }
@@ -430,6 +453,7 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
     mb8_nand_diag_active_clock(12000000u);
     current_width         = 1;
     current_address_bytes = 2;
+    current_divider       = AM_HAL_MSPI_CLK_12MHZ;
     quad_enabled          = false;
     am_util_delay_us(5000);
     *bus = (struct ds35_bus){

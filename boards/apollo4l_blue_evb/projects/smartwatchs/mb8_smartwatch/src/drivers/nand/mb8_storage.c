@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only
- * YAFFS Direct adapter for DS35M1GB. See storage/INTEGRATION.txt and yaffs2/LICENSE.
+ * YAFFS Direct adapter for DS35M1GB. See src/drivers/nand/INTEGRATION.txt and yaffs2/LICENSE.
  */
 #include "mb8_storage.h"
 #include "mb8_nand_board.h"
