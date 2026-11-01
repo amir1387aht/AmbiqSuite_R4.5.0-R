@@ -440,3 +440,109 @@ Scoped read path0x705b4->0x6d218->0x70ed4 receives original page and requests
 post-transform was seen in THAT path. This does NOT prove hardware scrambling
 off, every initialization variant, or watch firmware matching the mirrored
 version. No active Xiaomi clock/resistor/partition-write claim is added.
+
+READ-ONLY STOCK INITIALIZATION ANALYSIS (Global2.3.14, scoped static evidence)
+This appendix uses the EXACT package/hash/image2 mapping above; all addresses
+below are image2 runtime addresses unless explicitly marked package/RAM.
+No stock binary is included. Third-party mirror/hash consistency is NOT a
+Xiaomi signature check. Code-configured values are NOT measurements of this
+watch, proof every boot follows this path, or proof no later code changes them.
+Formatting and write-test boot modes remain disabled; this analysis changes
+NO production transport settings or filesystem authorization.
+
+Initialization and actual selected clock, rather than a generic SDK template:
+- Reset0xb3766..0xb3776 copies ROM0x13ec8c to RAM0x10005ae8..0x100083ac.
+  Literal words0xb37b4/0xb37b8/0xb37bc establish source/start/end. This gives
+  a direct, uncompressed mapping for the following initialized RAM objects.
+- Caller0x71706 ->0x70688 ->0x6d0ec ->0x70b70. At0x6d0f4..0x6d0fc,
+  r0=2 (MSPI2),r1=RAM0x10005eac; initialized bytes at ROM0x13f050,
+  package0x127544 start10 02 00 00. This driver supports several chip IDs;
+  that is NOT permission to relax this project's strict E5A1 check.
+-0x70bd0 loads application byte0=0x10. Dispatch table0xe95e0 has entries
+  0->RAM0x10005fa0,1->0x10005fb8,16->0x10005f70,17->0x10005f88.
+  Selected template0x10005f70 initially contains:
+  08 01 00 00 6b 00 32 00 10 00 00 18 00 01 01 01 00 00 00 00 00 00 00 00
+  At0x70be6..0x70be8, application byte1=2 OVERWRITES selected byte11.
+  Thus its generic initial byte11=0x18 is NOT the configured final divider.
+-0x70cc8/0x70ccc passes selected template to device configuration0x69044.
+  Consumer0x69090..0x69098 inserts byte11 into DEV0CFG[21:16];0x690ea
+  writes register+0x84. Actual special divide handling0x6909a/0x690d8 is
+  only for value1; selected2 follows the ordinary divider path. Apollo4l
+  CMSIS DEV0CFG.CLKDIV0 documents a96MHz source and divisor2=48MHz.
+  Conclusion: this traced initialization CONFIGURES48MHz, not the4MHz
+  generic template. This is stronger than an enum/string match, but it does
+  not establish a measured on-watch clock, every command's clock, or later
+  clock changes. Our controls remain12MHz/quad-data48MHz pending RO testing.
+
+Receive timing, exact consumer rather than inferred structure names:
+-0x6d11c..0x6d122 supplies RAM0x10005ec4 to0x71448. Initialized first six
+  bytes at ROM0x13f068/package0x12755c are00 01 01 14 0f 08.
+-0x7145c..0x7147c copies those six bytes;0x714a8 selects control request13
+  at0x693b4. TBH entry0x69406=0x016e resolves to0x696c8.
+-0x696d6..0x696fc maps bytes0/1/2 to DEV0CFG bits24/23/22;0x69700..0x69718
+  maps byte5 to DEV0CFG[13:8] and DEV0XIP[19:14];0x6971c..0x69734 maps
+  bytes3/4 to DEV0DDR[9:5]/[14:10]. Current Apollo4l CMSIS field meanings:
+  TXNEG=0,RXNEG=1,RXCAP=1,turnaround=8,TXDQSDELAY=20,RXDQSDELAY=15.
+  Setting delay fields does NOT itself prove DQS/emulated-DDR enable or their
+  effect in SDR. There is an EFBA-specific adjustment nearby; our E5A1 path
+  is not that branch. These are static initialization values, not a reason
+  to copy timing blindly into our different HAL/configuration lifecycle.
+
+Comparison with this branch's current HAL (a testable lead, NOT a diagnosis):
+Apollo4l am_hal_mspi.c device configuration around1508..1524 and CLOCK_CONFIG
+around2306..2322 set TXNEG/RXNEG/RXCAP=0/0/0 at both48MHz and12MHz. Our NAND
+backend does not request a TIMING_SCAN override. This differs from the traced
+stock0/1/1 receive tuple above and is a plausible read-capture timing lead;
+it does NOT prove that either observed byte stream is correct or explain the
+watch mismatch by itself. CLOCK_CONFIG resets these edge bits, so any future
+controlled stock-timing experiment must apply its scoped override AFTER each
+quad48MHz selection and restore appropriate serial12MHz timing, not just set
+it once during open. No such experiment is enabled by this documentation.
+First retest canonical03 framing read-only; do not relax YAFFS parsing to
+compensate for a possible transport difference.
+
+Scrambling and serial auxiliary pins (limited claims):
+- Device configuration0x690fc..0x69102 clears register+0x30 bit0,
+  DEV0SCRAMBLING enable. This proves a clear at THIS configuration point,
+  not that all later DMA descriptors/paths leave scrambling disabled.
+- Stock reset/setup0x708d8 configures pins76/77 and writes GPIO WTS2+0x22c:
+ 0x708f8..0x708fc sets bit12 (GPIO76),0x70948..0x7094c sets bit13(GPIO77),
+  then checks WT2+0x21c. This supports explicit HIGH handling of WP#/HOLD#
+  during serial work; it does NOT establish external resistor values, the
+  complete legacy pinconfig ABI, or every serial/quad transition. Our existing
+  GPIO-high/quad-release fix is retained, not replaced from partial analysis.
+
+Expected paths, NOT current watch files:
+Table0xef284 (image2 offset0x91284; package0xd7778) contains25 entries at
+stride56. Loops0x7c24c..0x7c2a2 and0x7c3a0..0x7c3bc iterate0..24 and call
+wrappers0x8980c/0x89418/0x7c36c. Full strings, relative to /yaffs2_mount/:
+ system, persist, data, file_srv_temp, ota, log, nfc, ram_dump, trace_malloc,
+ firmware, safemode, others, others/tp_rawdata, gps, ui, ui/watchface,
+ ui/watchface/base, ui/watchface/data, ui/watchface/photoAlbum, monkey/,
+ user_data, user_data/db, user_data/health, user_data/common,
+ user_data/notification.
+These are code-referenced expected directory names. They are NOT recovered
+live objects, evidence of those directories on this watch, or a successful
+filesystem listing. Stock in-band2032+16 layout evidence remains as above;
+our OOB-tag application profile must not be used to mount stock contents.
+
+Next non-destructive hardware check: use the safe read-only build with
+WATCH_NAND_FULL_FORMAT=0 WATCH_NAND_STARTUP_TESTS=1 WATCH_NAND_TEST_WRITE=0.
+The canonical03/address2/explicit8-turnaround reference remains UNCONFIRMED
+on-watch. Compare its complete-page results against quad reads before any
+new stock-layout inference. Agreement would cover sampled reads only, not
+prove authenticity or identify current files. If they disagree, preserve
+first operation/page/offset/fingerprints/controller diagnostics; do NOT erase,
+force a mount, relax chip checks, or treat repeated matching quad reads alone
+as proof of correct contents. No formatting/write authorization is restored.
+
+Register interpretation source in this SDK: CMSIS/AmbiqMicro/Include/apollo4l.h,
+MSPI DEV0CFG(+0x84),DEV0DDR(+0x88),DEV0SCRAMBLING(+0x30),GPIO WT2/WTS2.
+The external analysis verifier checks hash, reset-copy literals, initialized
+config bytes, selected-template dispatch, clock/timing consumer instruction
+signatures and25 complete path strings. It does not execute firmware and is
+not part of the watch project. Reproducible disassembly uses GNU objdump:
+ arm-none-eabi-objdump -D -b binary -m arm -M force-thumb \
+   --adjust-vma=0x5e000 --start-address=0x69044 --stop-address=0x6924c image2.bin
+Repeat at0x696c8..0x69738,0x70b70..0x70cf0,0x71448..0x714c4 and
+0xb3730..0xb37c0 for the timing, template selection and reset-copy chain.
