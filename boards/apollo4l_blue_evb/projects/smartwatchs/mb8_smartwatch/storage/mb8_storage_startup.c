@@ -139,7 +139,7 @@ static void report_shutdown_failure(void)
         "[NAND restore] phase=%s DS35=%d; reset required; no replay\r\n", d->phase, d->result);
     if (d->expected_valid)
         mb8_storage_log(
-            "[NAND restore] B0 saved=0x%02x expected=0x%02x; FULL-byte compare; defined-mask=0xd1\r\n",
+            "[NAND restore] B0 saved=0x%02x expected=0x%02x; documented-bit compare; defined-mask=0xd1\r\n",
             (unsigned)d->saved,
             (unsigned)d->expected);
     else
@@ -148,7 +148,7 @@ static void report_shutdown_failure(void)
         mb8_storage_log("[NAND restore] B0 observed=0x%02x xor=0x%02x defined-bit-diff=0x%02x\r\n",
             (unsigned)d->observed,
             (unsigned)(d->observed ^ d->expected),
-            (unsigned)((d->observed ^ d->expected) & 0xd1u));
+            (unsigned)((d->observed ^ d->expected) & DS35_B0_DEFINED_MASK));
     else
         mb8_storage_log("[NAND restore] B0 observed unavailable: GET did not complete\r\n");
 }
@@ -166,13 +166,15 @@ void mb8_storage_report_diagnostics(void)
         if (o->expected_valid)
         {
             mb8_storage_log(
-                "[NAND core] B0 expected=0x%02x comparison-mask=0x%02x (BBM uses full byte)\r\n",
+                "[NAND core] B0 expected=0x%02x comparison-mask=0x%02x (documented B0 bits)\r\n",
                 (unsigned)o->expected,
                 (unsigned)o->compare_mask);
             if (o->observed_valid)
-                mb8_storage_log("[NAND core] B0 observed=0x%02x xor=0x%02x\r\n",
+                mb8_storage_log(
+                    "[NAND core] B0 observed=0x%02x xor=0x%02x defined-bit-diff=0x%02x\r\n",
                     (unsigned)o->observed,
-                    (unsigned)(o->expected ^ o->observed));
+                    (unsigned)(o->expected ^ o->observed),
+                    (unsigned)((o->expected ^ o->observed) & DS35_B0_DEFINED_MASK));
             else
                 mb8_storage_log("[NAND core] B0 observed unavailable (GET not completed)\r\n");
         }

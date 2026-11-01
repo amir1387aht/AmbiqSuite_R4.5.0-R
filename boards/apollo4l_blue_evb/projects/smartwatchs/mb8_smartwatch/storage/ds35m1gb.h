@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+/* Datasheet rev07 Table3.1: OTP_PRT7, OTP_EN6, ECC_EN4, QE0.
+ * Other B0 bits are reserved and have no guaranteed restorable readback. */
+#define DS35_B0_DEFINED_MASK 0xd1u
 #define DS35_MAX_CLOCK_HZ    83000000u
 #define DS35_PAGE            2048u
 #define DS35_OOB             128u
@@ -47,7 +50,7 @@ struct ds35_bus
 
 /* Shutdown evidence is retained on failure; no fabricated observed value when
  * SET/GET or the clock transition did not complete. Table3.1 defines B0 bits
- * 7,6,4,0; comparison remains FULL BYTE until a real mismatch is understood. */
+ * 7,6,4,0; comparison checks those bits, preserving raw bytes as evidence. */
 struct ds35_shutdown_diagnostic
 {
     const char *phase;

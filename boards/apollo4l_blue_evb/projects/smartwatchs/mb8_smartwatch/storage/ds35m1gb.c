@@ -5,6 +5,15 @@
 #include "ds35m1gb.h"
 #include <string.h>
 
+/* Compare documented B0 controls; never ignore QE/ECC/OTP mismatches. Keep raw
+ * SET/GET bytes unchanged: reserved bits are not promised stable/read-writable.
+ * All SET bytes retain the existing read-modify-write policy; no OTP operation.
+ */
+static bool b0_matches(uint8_t expected, uint8_t observed)
+{
+    return ((expected ^ observed) & DS35_B0_DEFINED_MASK) == 0;
+}
+
 /* Retain the first failing read/BBM phase across cleanup. A later probe clears
  * it only after the worker has printed the evidence and elected to continue. */
 static void operation_begin(struct ds35_nand *n, const char *phase, uint32_t page)
@@ -177,7 +186,7 @@ int ds35_probe(struct ds35_nand *n, const struct ds35_bus *bus, uint32_t first, 
     operation_stage(n, "probe-set-B0", first * DS35_PAGES_PER_BLOCK);
     n->operation.expected       = expected;
     n->operation.expected_valid = true;
-    n->operation.compare_mask   = 0x51; /* Existing QE/ECC/OTP_EN probe policy. */
+    n->operation.compare_mask   = DS35_B0_DEFINED_MASK;
     r                           = set_feature(n, 0xb0, expected);
     if (r >= 0)
     {
@@ -185,7 +194,7 @@ int ds35_probe(struct ds35_nand *n, const struct ds35_bus *bus, uint32_t first, 
         r                           = feature(n, 0xb0, &n->operation.observed);
         n->operation.observed_valid = r >= 0;
     }
-    if (r < 0 || (n->operation.observed & 0x51) != (bus->data_width == 4 ? 0x11 : 0x10))
+    if (r < 0 || !b0_matches(expected, n->operation.observed))
     {
         int error = operation_error(n, r < 0 ? r : DS35_IO);
         /* Healthy readback mismatch may restore saved B0; a faulted transport
@@ -274,8 +283,8 @@ int ds35_read(struct ds35_nand *n, uint32_t page, void *data, size_t bytes, void
     return ecc;
 }
 
-/* No masked comparisons or undocumented delay/retry: snapshot the exact B0
- * write/readback used for raw BBM ECC switching. Reserved bits stay preserved. */
+/* Snapshot complete B0 bytes for BBM ECC switching; verify every documented
+ * bit, tolerating only reserved readback differences. No delay/retry changes. */
 static int bbm_feature(
     struct ds35_nand *n, uint8_t value, uint32_t page, const char *set_phase, const char *get_phase)
 {
@@ -285,7 +294,7 @@ static int bbm_feature(
     {
         n->operation.expected       = value;
         n->operation.expected_valid = true;
-        n->operation.compare_mask   = 0xff;
+        n->operation.compare_mask   = DS35_B0_DEFINED_MASK;
     }
     uint8_t observed;
     int     r = set_feature(n, 0xb0, value);
@@ -301,7 +310,7 @@ static int bbm_feature(
                 n->operation.observed = observed;
         }
     }
-    if (r >= 0 && observed != value)
+    if (r >= 0 && !b0_matches(value, observed))
         r = DS35_IO;
     if (r < 0)
     {
@@ -422,7 +431,7 @@ int ds35_mark_bad(struct ds35_nand *n, uint32_t block)
         return r;
     if ((r = set_feature(n, 0xb0, config & ~0x10u)) < 0)
         return r;
-    if ((r = feature(n, 0xb0, &status)) < 0 || status != (uint8_t)(config & ~0x10u))
+    if ((r = feature(n, 0xb0, &status)) < 0 || !b0_matches((uint8_t)(config & ~0x10u), status))
     {
         if (!n->fault)
             set_feature(n, 0xb0, config);
@@ -448,7 +457,7 @@ int ds35_mark_bad(struct ds35_nand *n, uint32_t block)
         n->fault = true;
         return DS35_IO;
     }
-    if ((r = feature(n, 0xb0, &status)) < 0 || status != config)
+    if ((r = feature(n, 0xb0, &status)) < 0 || !b0_matches(config, status))
     {
         n->fault = true;
         return DS35_IO;
@@ -500,7 +509,7 @@ int ds35_shutdown(struct ds35_nand *n)
             r                 = feature(n, 0xb0, &d->observed);
             d->observed_valid = r >= 0;
         }
-        if (r >= 0 && d->observed != d->expected)
+        if (r >= 0 && !b0_matches(d->expected, d->observed))
         {
             d->phase = "shutdown-B0-mismatch";
             r        = DS35_IO;

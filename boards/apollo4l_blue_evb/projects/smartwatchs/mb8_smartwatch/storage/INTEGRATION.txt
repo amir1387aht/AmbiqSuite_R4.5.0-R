@@ -59,8 +59,9 @@ No later partition-guard message replaces this failure. Identified raw128MiB
 remains distinguishable from unavailable filesystem occupancy.
 [NAND RAW] gives physical page, transaction phase, primary/shutdown/bus codes.
 [NAND core] gives first probe/read/BBM subphase; BBM ECC-off/restore GET-B0 values
-are valid only if GET completed, and compared FULL BYTE. Existing probe setup
-mask51 is reported honestly; shutdown maskFF and reserved B0 bits are unchanged.
+are valid only if GET completed. Probe, BBM, shutdown and write-authorized bad
+marker B0 checks all use documented-bit maskD1. Raw bytes/XOR remain unmasked;
+defined-bit-diff alone determines control-state mismatch, not reserved bits.
 [NAND wire] gives failing/last opcode, address, bytes, data-lanes, configuredclock.
 [NAND bus] distinguishes DMA enqueue/status/clear/service/errorbits/callback/
 bounded poll-timeout from serial PIO/phase switching errors. Safe powered
@@ -94,14 +95,22 @@ commands still ran at the selected48MHz bulk clock, and lowering followed only
 a successful restore. This sequencing correction is conservative; the user's
 E5 A1/status-success +shutdown-failure log does NOT prove its root cause.
 48MHz data/normal-operation clock policy is otherwise unchanged.
-Table3.1 defines B0[7,6,4,0]; other bits are reserved, not documented busy/volatile
-bits. FULL-BYTE restore verification remains enforced, including reserved-only
-mismatches; no discrepancy is silently masked. No tFEAT/busy wait is specified
+Table3.1 defines B0[7,6,4,0] (OTP_PRT/OTP_EN/ECC_EN/QE), maskD1. All B0
+verification now checks EVERY one of those bits; bits5/3/2/1 are reserved, not
+claimed stable, writable, busy or restorable. A watch log showed ECC-off expected
+0x0f, observed0x07, XOR08: reserved bit3 only, so the old full-byte check falsely
+faulted BEFORE any quad cache read. This specific false fault is corrected.
+RMW SET values are unchanged; reserved writes are not claimed effective. Initial
+OTP-mode rejection and all OTP/QE/ECC mismatch failures remain; no OTP access,
+clock/pad/quad changes or new writes are introduced. A0 protection verification
+is separate and remains unchanged. No tFEAT/busy wait is specified
 for SET FEATURES; existing1us CS gap exceeds Table4.7 tCS>=100ns. No invented
 feature-program timing or undocumented command/retry is introduced.
 On failure, [NAND restore] prints phase, DS35 result, saved/expected B0 and
 observed B0 ONLY if GET completed; otherwise observed unavailable. XOR plus
-defined-bit-diff (maskD1) are diagnostic only, NOT a relaxed comparison.
+defined-bit-diff (maskD1) retain raw evidence and show the actual control-state
+comparison. Reserved-only differences are tolerated, never treated as ECC/QE/OTP
+failures. This does not establish that the subsequent quad data path works.
 clock-down, SET-B0, GET-B0 and mismatch are distinct. Runtime HAL phase/PIO/DMA/
 clock/close failures preserve their first status before cleanup. Last successful
 HAL clock is a software configuration snapshot, not measured frequency. JEDEC
