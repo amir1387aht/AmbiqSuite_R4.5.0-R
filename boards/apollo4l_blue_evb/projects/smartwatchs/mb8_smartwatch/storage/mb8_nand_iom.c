@@ -125,10 +125,9 @@ static void delay(void *ctx, uint32_t us)
 
 int mb8_nand_iom_open(struct ds35_bus *bus)
 {
-    mb8_nand_diag_begin("IOM x1");
     if (poisoned)
-        return mb8_nand_diag_fail(
-            DS35_NOT_READY, "poisoned", "firmware reset required after prior fault");
+        return DS35_NOT_READY; /* Preserve first failure until firmware reset. */
+    mb8_nand_diag_begin("IOM x1");
     if (!bus || iom)
         return mb8_nand_diag_fail(DS35_EINVAL, "handle-guard", "NULL bus or IOM already open");
     if (mb8_nand_board.profile != MB8_NAND_PROFILE_STOCK_MB8)

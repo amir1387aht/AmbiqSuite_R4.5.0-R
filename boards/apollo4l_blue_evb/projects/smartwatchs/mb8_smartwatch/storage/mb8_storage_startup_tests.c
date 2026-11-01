@@ -303,7 +303,7 @@ finish:
                : "SKIP (no accessible nonempty regular file)");
 }
 
-void mb8_storage_startup_raw_tests(void)
+bool mb8_storage_startup_raw_tests(void)
 {
     const uint32_t pages[] = {0, 1, DS35_BLOCKS * DS35_PAGES_PER_BLOCK - 1};
     for (unsigned i = 0; i < sizeof(pages) / sizeof(pages[0]); i++)
@@ -323,7 +323,22 @@ void mb8_storage_startup_raw_tests(void)
             ok ? "PASS" : "FAIL",
             r,
             ok ? (unsigned)checksum(first, sizeof(first)) : 0u);
+        if (!ok)
+        {
+            const struct mb8_storage_raw_diagnostic *d = mb8_storage_raw_diagnostic();
+            mb8_storage_log("[NAND RAW] page=%u phase=%s primary=%d shutdown=%d bus=%d\r\n",
+                (unsigned)d->page,
+                d->phase,
+                d->primary_result,
+                d->shutdown_result,
+                d->bus_result);
+            mb8_storage_report_diagnostics(); /* BEFORE any new open resets snapshots. */
+            mb8_storage_log(
+                "[NAND test] remaining RAW/filesystem checks SKIP after first failure; no retry\r\n");
+            return false;
+        }
     }
+    return true;
 }
 
 void mb8_storage_startup_read_tests(void)

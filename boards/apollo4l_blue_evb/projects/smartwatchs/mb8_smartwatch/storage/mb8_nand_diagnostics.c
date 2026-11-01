@@ -38,6 +38,36 @@ void mb8_nand_diag_probe_started(void)
     diagnostic.probe_started = true;
 }
 
+void mb8_nand_diag_wire(uint32_t opcode, uint32_t address, uint32_t bytes, uint32_t width)
+{
+    if (diagnostic.result < 0)
+        return;
+    diagnostic.irq_last     = 0;
+    diagnostic.wire_valid   = true;
+    diagnostic.wire_opcode  = opcode;
+    diagnostic.wire_address = address;
+    diagnostic.wire_bytes   = bytes;
+    diagnostic.wire_width   = width;
+}
+
+void mb8_nand_diag_irq(uint32_t irq)
+{
+    if (diagnostic.result >= 0)
+        diagnostic.irq_last = irq;
+}
+
+void mb8_nand_diag_registers(uint32_t irq, uint32_t cq, uint32_t dma, uint32_t dev, uint32_t ctrl)
+{
+    if (diagnostic.registers_valid)
+        return;
+    diagnostic.registers_valid = true;
+    diagnostic.irq_raw         = irq;
+    diagnostic.cqstat          = cq;
+    diagnostic.dmastat         = dma;
+    diagnostic.dev0cfg         = dev;
+    diagnostic.ctrl1           = ctrl;
+}
+
 int mb8_nand_diag_fail(int result, const char *stage, const char *reason)
 {
     if (diagnostic.result >= 0)

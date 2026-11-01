@@ -238,6 +238,11 @@ const struct ds35_shutdown_diagnostic *mb8_storage_shutdown_diagnostic(void)
     return &nand.shutdown;
 }
 
+const struct ds35_operation_diagnostic *mb8_storage_operation_diagnostic(void)
+{
+    return &nand.operation;
+}
+
 int mb8_storage_probe_only(void)
 {
     raw_identified   = false;
@@ -333,29 +338,80 @@ int mb8_storage_read_sample(uint32_t relative_page, void *data, size_t bytes)
 }
 
 #if WATCH_NAND_STARTUP_TESTS
+static struct mb8_storage_raw_diagnostic raw_diagnostic;
+
+const struct mb8_storage_raw_diagnostic *mb8_storage_raw_diagnostic(void)
+{
+    return &raw_diagnostic;
+}
+
 int mb8_storage_raw_read_pair(uint32_t physical_page, void *first, void *second, size_t bytes)
 {
     if (!claim_worker() || dev.is_mounted || !first || !second || !bytes || bytes > 256 ||
         physical_page >= DS35_BLOCKS * DS35_PAGES_PER_BLOCK)
         return DS35_EINVAL;
+    /* No automatic retry, and no replacement of first evidence by a later
+     * poisoned-open NOT_READY. A firmware boot resets this temporary state. */
+    if ((raw_diagnostic.primary_result < 0 && raw_diagnostic.primary_result != DS35_BAD) ||
+        raw_diagnostic.shutdown_result < 0 || raw_diagnostic.bus_result < 0)
+    {
+        if (raw_diagnostic.primary_result < 0 && raw_diagnostic.primary_result != DS35_BAD)
+            return raw_diagnostic.primary_result;
+        return raw_diagnostic.shutdown_result < 0 ? raw_diagnostic.shutdown_result
+                                                  : raw_diagnostic.bus_result;
+    }
+    raw_diagnostic =
+        (struct mb8_storage_raw_diagnostic){.page = physical_page, .phase = "bus-open"};
     struct ds35_bus bus;
     int             r = mb8_nand_bus_open(&bus);
     if (r < 0)
+    {
+        raw_diagnostic.primary_result = r;
+        raw_diagnostic.bus_result     = mb8_nand_bus_diagnostic()->result;
+        status_text                   = "RAW bus open failed; no later RAW/filesystem checks";
         return r;
-    /* Explicit RAW diagnostic block, not a filesystem partition. No writable
-     * handle escapes; no allow_writes/PROGRAM/ERASE/BBM-mark/YAFFS calls here. */
+    }
+    /* Explicit RAW diagnostic block, NOT a filesystem partition. */
+    raw_diagnostic.phase = "probe";
     mb8_nand_diag_probe_started();
     r = ds35_probe(&nand, &bus, physical_page / DS35_PAGES_PER_BLOCK, 1);
     if (r == DS35_OK)
-        r = ds35_check_bad(&nand, physical_page / DS35_PAGES_PER_BLOCK);
+    {
+        raw_diagnostic.phase = "bad-block-markers";
+        r                    = ds35_check_bad(&nand, physical_page / DS35_PAGES_PER_BLOCK);
+    }
     if (r == DS35_OK)
-        r = ds35_read(&nand, physical_page, first, bytes, NULL, 0);
+    {
+        raw_diagnostic.phase = "first-data-read";
+        r                    = ds35_read(&nand, physical_page, first, bytes, NULL, 0);
+    }
     if (r >= 0)
-        r = ds35_read(&nand, physical_page, second, bytes, NULL, 0);
-    int closed = ds35_shutdown(&nand);
+    {
+        raw_diagnostic.phase = "repeat-data-read";
+        r                    = ds35_read(&nand, physical_page, second, bytes, NULL, 0);
+    }
+    if (r >= 0 && memcmp(first, second, bytes))
+    {
+        raw_diagnostic.phase = "repeat-consistency";
+        r                    = DS35_IO;
+    }
+    raw_diagnostic.primary_result  = r;
+    raw_diagnostic.shutdown_result = ds35_shutdown(&nand);
     mb8_nand_bus_close();
-    /* A failed feature restore must never be mislabeled as a harmless BAD skip. */
-    return closed < 0 ? closed : r;
+    raw_diagnostic.bus_result = mb8_nand_bus_diagnostic()->result;
+    if ((r < 0 && r != DS35_BAD) || raw_diagnostic.shutdown_result < 0 ||
+        raw_diagnostic.bus_result < 0)
+        status_text =
+            "RAW operation/cleanup failed; no later RAW/filesystem checks (see diagnostics)";
+    /* Keep a real primary error; NOT_READY during cleanup must not erase it.
+     * BAD alone is harmless ONLY when both feature restore and close succeed. */
+    if (r < 0 && r != DS35_BAD)
+        return r;
+    if (raw_diagnostic.shutdown_result < 0)
+        return raw_diagnostic.shutdown_result;
+    if (raw_diagnostic.bus_result < 0)
+        return raw_diagnostic.bus_result;
+    return r;
 }
 #endif
 

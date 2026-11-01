@@ -31,8 +31,19 @@ int  mb8_storage_probe_only(void);
 /* Same storage worker only, snapshot valid until next NAND probe. */
 struct ds35_shutdown_diagnostic;
 const struct ds35_shutdown_diagnostic *mb8_storage_shutdown_diagnostic(void);
-int                                    mb8_storage_get_usage(struct mb8_storage_usage *);
+struct ds35_operation_diagnostic;
+const struct ds35_operation_diagnostic *mb8_storage_operation_diagnostic(void);
+int                                     mb8_storage_get_usage(struct mb8_storage_usage *);
 #if WATCH_NAND_STARTUP_TESTS
+struct mb8_storage_raw_diagnostic
+{
+    const char *phase;
+    uint32_t    page;
+    int         primary_result, shutdown_result, bus_result;
+};
+const struct mb8_storage_raw_diagnostic *mb8_storage_raw_diagnostic(void);
+/* Print retained core/bus/shutdown evidence from this storage worker only. */
+void mb8_storage_report_diagnostics(void);
 /* Explicit RAW diagnostic only: <=256B twice, closed read-only transaction.
  * Does NOT infer a filesystem partition or alter the ID-only empty-range API. */
 int mb8_storage_raw_read_pair(uint32_t physical_page, void *, void *, size_t);

@@ -47,6 +47,33 @@ FIRST_BLOCK=UNKNOWN, BLOCK_COUNT=0. Thus current default filesystem log is:
 Actual bus/ID failures instead report their failure, without invented raw/free
 capacity or claimed successful hardware tests. No automatic formatting occurs.
 
+FIRST RAW FAILURE / NO RETRY
+A RAW transaction reports its PRIMARY probe/BBM/read result separately from
+shutdown and controller-close results. Cleanup NOT_READY never replaces the
+original error. BAD is a harmless skip ONLY if feature restoration and bus close
+succeeded; BAD+restore failure and successful read+close failure are FAIL.
+The worker prints retained evidence immediately BEFORE another open can reset
+it, then stops remaining RAW and filesystem checks. First RAW failure is latched
+until boot; poisoned MSPI/IOM opens preserve original first HAL evidence.
+No later partition-guard message replaces this failure. Identified raw128MiB
+remains distinguishable from unavailable filesystem occupancy.
+[NAND RAW] gives physical page, transaction phase, primary/shutdown/bus codes.
+[NAND core] gives first probe/read/BBM subphase; BBM ECC-off/restore GET-B0 values
+are valid only if GET completed, and compared FULL BYTE. Existing probe setup
+mask51 is reported honestly; shutdown maskFF and reserved B0 bits are unchanged.
+[NAND wire] gives failing/last opcode, address, bytes, data-lanes, configuredclock.
+[NAND bus] distinguishes DMA enqueue/status/clear/service/errorbits/callback/
+bounded poll-timeout from serial PIO/phase switching errors. Safe powered
+controller snapshots [NAND regs] are captured BEFORE abort/power gating: raw and
+last-polled IRQ, CQSTAT, DMASTAT, DEV0CFG and CTRL1. These are not a hardware dump
+or proof of the electrical root cause. No failed HAL call is explicitly stated
+for software readback/consistency/busy errors instead of inventing a HAL error.
+The first BBM access is6B quad read of1byte atcolumn2048. Actual Apollo4l HAL
+build_dma_cmdlist/nonblocking validation does not forbid1-byte non-HEX transfers;
+aligned shared bounce and requested bytecount remain unchanged. This evidence
+patch does NOT replace quad transport, bypass BBM/ECC, alter data clock48MHz,
+change pads/drive strength, round reads, guess a partition, or program/erase.
+
 PRECISE BUS DIAGNOSTICS / UART
 mb8_nand_diagnostics.c records a single-worker snapshot, no printf in HAL/IRQ.
 An open failure prints backend/stage/reason, DS35 result, first HAL status(decimal

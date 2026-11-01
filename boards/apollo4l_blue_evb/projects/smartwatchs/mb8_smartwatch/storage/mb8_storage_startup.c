@@ -153,6 +153,61 @@ static void report_shutdown_failure(void)
         mb8_storage_log("[NAND restore] B0 observed unavailable: GET did not complete\r\n");
 }
 
+#if WATCH_NAND_STARTUP_TESTS
+void mb8_storage_report_diagnostics(void)
+{
+    const struct ds35_operation_diagnostic *o = mb8_storage_operation_diagnostic();
+    if (o->phase)
+    {
+        mb8_storage_log("[NAND core] phase=%s physical-page=%u primary=%d\r\n",
+            o->phase,
+            (unsigned)o->page,
+            o->result);
+        if (o->expected_valid)
+        {
+            mb8_storage_log(
+                "[NAND core] B0 expected=0x%02x comparison-mask=0x%02x (BBM uses full byte)\r\n",
+                (unsigned)o->expected,
+                (unsigned)o->compare_mask);
+            if (o->observed_valid)
+                mb8_storage_log("[NAND core] B0 observed=0x%02x xor=0x%02x\r\n",
+                    (unsigned)o->observed,
+                    (unsigned)(o->expected ^ o->observed));
+            else
+                mb8_storage_log("[NAND core] B0 observed unavailable (GET not completed)\r\n");
+        }
+        if (!o->expected_valid && o->observed_valid)
+            mb8_storage_log("[NAND core] B0 observed=0x%02x (mode check, no expected value)\r\n",
+                (unsigned)o->observed);
+        if (o->status_valid)
+            mb8_storage_log("[NAND core] last completed status=0x%02x\r\n", (unsigned)o->status);
+    }
+    report_bus_failure();
+    const struct mb8_nand_diagnostic *b = mb8_nand_bus_diagnostic();
+    if (b->result >= 0)
+        mb8_storage_log(
+            "[NAND bus] no failed HAL call recorded; inspect RAW/core protocol or readback evidence\r\n");
+    if (b->wire_valid)
+        mb8_storage_log(
+            "[NAND wire] opcode=%02x addr=%u bytes=%u data-lanes=%u clock=%uHz (configured)\r\n",
+            (unsigned)b->wire_opcode,
+            (unsigned)b->wire_address,
+            (unsigned)b->wire_bytes,
+            (unsigned)b->wire_width,
+            (unsigned)b->active_hz);
+    if (b->registers_valid)
+        mb8_storage_log(
+            "[NAND regs] BEFORE abort: IRQlast=%08x IRQraw=%08x CQSTAT=%08x DMASTAT=%08x DEV0CFG=%08x CTRL1=%08x\r\n",
+            (unsigned)b->irq_last,
+            (unsigned)b->irq_raw,
+            (unsigned)b->cqstat,
+            (unsigned)b->dmastat,
+            (unsigned)b->dev0cfg,
+            (unsigned)b->ctrl1);
+    report_shutdown_failure();
+}
+#endif
+
 static void startup_worker(void *unused)
 {
     (void)unused;
@@ -180,7 +235,11 @@ static void startup_worker(void *unused)
     else
     {
 #if WATCH_NAND_STARTUP_TESTS
-        mb8_storage_startup_raw_tests();
+        if (!mb8_storage_startup_raw_tests())
+        {
+            report();
+            goto startup_done;
+        }
 #endif
         if (mb8_storage_mount(true) < 0)
         {
@@ -223,6 +282,9 @@ static void startup_worker(void *unused)
 #endif
         }
     }
+#if WATCH_NAND_STARTUP_TESTS
+startup_done:; /* C11 label precedes a statement even when write-test logging is off. */
+#endif
 #if WATCH_NAND_STARTUP_TESTS && !WATCH_NAND_TEST_WRITE
     mb8_storage_log("[NAND test] write/delete SKIP: WATCH_NAND_TEST_WRITE=0\r\n");
 #endif

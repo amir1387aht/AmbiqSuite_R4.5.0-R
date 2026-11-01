@@ -28,6 +28,12 @@ static void abort_controller(void)
      * power. Retain static buffers/handle allocation and require firmware reset.
      * No late DMA callback is allowed to write into reused memory.
      */
+    if (mspi && !poisoned)
+        mb8_nand_diag_registers(MSPIn(mb8_nand_board.mspi)->INTSTAT,
+            MSPIn(mb8_nand_board.mspi)->CQSTAT,
+            MSPIn(mb8_nand_board.mspi)->DMASTAT,
+            MSPIn(mb8_nand_board.mspi)->DEV0CFG,
+            MSPIn(mb8_nand_board.mspi)->CTRL1);
     poisoned     = true;
     quad_enabled = false;
     if (!mspi)
@@ -149,6 +155,7 @@ static int transfer(void *ctx,
     int r = mb8_nand_mspi_plan(header, hn, tx, rx, len, width, quad_enabled, &p);
     if (r < 0)
         return r;
+    mb8_nand_diag_wire(p.opcode, p.address, (uint32_t)len, width);
     if ((r = configure_phase(&p)) < 0)
         return r;
     if (tx)
@@ -184,25 +191,42 @@ static int transfer(void *ctx,
         am_hal_daxi_control(AM_HAL_DAXI_CONTROL_FLUSH, 0);
         __DMB();
         status = am_hal_mspi_nonblocking_transfer(mspi, &t, AM_HAL_MSPI_TRANS_DMA, done, NULL);
+        mb8_nand_diag_hal(status, "DMA-enqueue");
         for (unsigned waited = 0; !status && !completed && waited < 10000; waited++)
         {
             uint32_t irq = 0;
             status       = am_hal_mspi_interrupt_status_get(mspi, &irq, false);
+            mb8_nand_diag_hal(status, "DMA-IRQ-status");
+            if (!status)
+                mb8_nand_diag_irq(irq);
             if (!status && irq)
             {
                 status = am_hal_mspi_interrupt_clear(mspi, irq);
+                mb8_nand_diag_hal(status, "DMA-IRQ-clear");
                 if (!status)
+                {
                     status = am_hal_mspi_interrupt_service(mspi, irq);
+                    mb8_nand_diag_hal(status, "DMA-IRQ-service");
+                }
                 if (irq & AM_HAL_MSPI_INT_ERR)
+                {
                     status = AM_HAL_STATUS_FAIL;
+                    mb8_nand_diag_hal(status, "DMA-IRQ-error-bits");
+                }
             }
             if (!completed)
                 am_util_delay_us(1);
         }
         if (!status && !completed)
+        {
             status = AM_HAL_STATUS_TIMEOUT;
+            mb8_nand_diag_hal(status, "DMA-poll-timeout");
+        }
         if (!status && completion_status)
+        {
             status = completion_status;
+            mb8_nand_diag_hal(status, "DMA-callback-status");
+        }
         /* HAL callback invalidates DAXI after DMA before marking completion. */
         __DMB();
     }
@@ -304,10 +328,9 @@ static int validate_pins(const uint32_t *pins, const uint32_t *functions)
 
 int mb8_nand_mspi_open(struct ds35_bus *bus)
 {
-    mb8_nand_diag_begin("MSPI 1-1-4");
     if (poisoned)
-        return mb8_nand_diag_fail(
-            DS35_NOT_READY, "poisoned", "firmware reset required after prior bus fault");
+        return DS35_NOT_READY; /* Preserve first failure until firmware reset. */
+    mb8_nand_diag_begin("MSPI 1-1-4");
     if (!bus || mspi)
         return mb8_nand_diag_fail(
             DS35_EINVAL, "handle-guard", "NULL output bus or controller already open");

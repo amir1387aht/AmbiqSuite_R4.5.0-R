@@ -5,6 +5,33 @@
 #include "ds35m1gb.h"
 #include <string.h>
 
+/* Retain the first failing read/BBM phase across cleanup. A later probe clears
+ * it only after the worker has printed the evidence and elected to continue. */
+static void operation_begin(struct ds35_nand *n, const char *phase, uint32_t page)
+{
+    if (n->operation.result >= 0)
+        n->operation = (struct ds35_operation_diagnostic){.phase = phase, .page = page};
+}
+
+static void operation_stage(struct ds35_nand *n, const char *phase, uint32_t page)
+{
+    if (n->operation.result < 0)
+        return;
+    /* Keep completed C0 evidence through cache-read phases for this page, but
+     * never attach a previous page/operation's status to a failed new read. */
+    bool    valid  = n->operation.status_valid && n->operation.page == page;
+    uint8_t status = n->operation.status;
+    n->operation   = (struct ds35_operation_diagnostic){
+        .phase = phase, .page = page, .status_valid = valid, .status = valid ? status : 0};
+}
+
+static int operation_error(struct ds35_nand *n, int result)
+{
+    if (result < 0 && n->operation.result >= 0)
+        n->operation.result = result;
+    return result;
+}
+
 static int transfer(struct ds35_nand *n,
     const uint8_t                    *h,
     size_t                            hn,
@@ -48,6 +75,11 @@ static int wait_ready(struct ds35_nand *n, uint32_t max_us, uint8_t *status)
         int r = feature(n, 0xc0, status);
         if (r < 0)
             return r;
+        if (n->operation.result >= 0)
+        {
+            n->operation.status       = *status;
+            n->operation.status_valid = true;
+        }
         if (!(*status & 1))
             return DS35_OK;
         n->bus.delay_us(n->bus.ctx, 10);
@@ -123,38 +155,50 @@ int ds35_probe(struct ds35_nand *n, const struct ds35_bus *bus, uint32_t first, 
     n->first_block = first;
     n->block_count = count;
     uint8_t status, id[2], h[] = {0x9f, 0};
-    int     r = command(n, 0xff);
+    operation_begin(n, "probe-reset/status", first * DS35_PAGES_PER_BLOCK);
+    int r = command(n, 0xff);
     if (r < 0 || (r = wait_ready(n, 2000, &status)) < 0)
-        return r;
+        return operation_error(n, r);
+    operation_stage(n, "probe-JEDEC-ID", first * DS35_PAGES_PER_BLOCK);
     if ((r = transfer(n, h, 2, NULL, id, 2, 1)) < 0)
-        return r;
+        return operation_error(n, r);
     if (id[0] != 0xe5 || id[1] != 0xa1)
-        return DS35_ID;
-    /* Read array mode, ECC on; QE follows the explicit backend capability. */
+        return operation_error(n, DS35_ID);
+    operation_stage(n, "probe-get-B0/mode-guard", first * DS35_PAGES_PER_BLOCK);
     if ((r = feature(n, 0xb0, &status)) < 0)
-        return r;
+        return operation_error(n, r);
+    n->operation.observed       = status;
+    n->operation.observed_valid = true;
     if (status & 0xc0)
-        return DS35_NOT_READY;
+        return operation_error(n, DS35_NOT_READY);
     n->saved_feature = status;
     n->feature_saved = true;
-    if ((r = set_feature(n, 0xb0, ((status | 0x10) & ~1u) | (bus->data_width == 4 ? 1u : 0u))) <
-            0 ||
-        (r = feature(n, 0xb0, &status)) < 0 ||
-        (status & 0x51) != (bus->data_width == 4 ? 0x11 : 0x10))
+    uint8_t expected = ((status | 0x10) & ~1u) | (bus->data_width == 4 ? 1u : 0u);
+    operation_stage(n, "probe-set-B0", first * DS35_PAGES_PER_BLOCK);
+    n->operation.expected       = expected;
+    n->operation.expected_valid = true;
+    n->operation.compare_mask   = 0x51; /* Existing QE/ECC/OTP_EN probe policy. */
+    r                           = set_feature(n, 0xb0, expected);
+    if (r >= 0)
     {
-        int error = r < 0 ? r : DS35_IO;
-        /* A readback mismatch can leave a healthy transport. Restore the saved
-         * volatile feature before returning, including standalone probe callers.
-         * A transport fault cannot be replayed; backend is already poisoned.
-         */
+        n->operation.phase          = "probe-get-B0/setup-check";
+        r                           = feature(n, 0xb0, &n->operation.observed);
+        n->operation.observed_valid = r >= 0;
+    }
+    if (r < 0 || (n->operation.observed & 0x51) != (bus->data_width == 4 ? 0x11 : 0x10))
+    {
+        int error = operation_error(n, r < 0 ? r : DS35_IO);
+        /* Healthy readback mismatch may restore saved B0; a faulted transport
+         * must not replay. Preserve the setup evidence across this cleanup. */
         if (!n->fault)
             ds35_shutdown(n);
         return error;
     }
+    operation_stage(n, "probe-clock-up", first * DS35_PAGES_PER_BLOCK);
     if (bus->data_width == 4 && (r = bus->quad_ready(bus->ctx, true)) < 0)
     {
         n->fault = true;
-        return r;
+        return operation_error(n, r);
     }
     n->ready = true;
     return DS35_OK;
@@ -190,28 +234,33 @@ int ds35_allow_writes(struct ds35_nand *n)
 
 int ds35_read(struct ds35_nand *n, uint32_t page, void *data, size_t bytes, void *tags, size_t tn)
 {
-    if (!n || !page_valid(n, page) || bytes > DS35_PAGE || tn > DS35_TAG_CAPACITY || (tn && !tags))
+    if (!n)
         return DS35_EINVAL;
+    operation_begin(n, "read-guard", page);
+    if (!page_valid(n, page) || bytes > DS35_PAGE || tn > DS35_TAG_CAPACITY || (tn && !tags))
+        return operation_error(n, DS35_EINVAL);
     /* YAFFS tag-only reads pass NULL data with bytes=2048. */
     uint8_t status;
-    int     r = page_to_cache(n, page, &status);
+    operation_stage(n, "read-page-to-cache/status", page);
+    int r = page_to_cache(n, page, &status);
     if (r < 0)
-        return r;
+        return operation_error(n, r);
     int ecc = ds35_ecc_status(status);
     if (ecc < 0)
     {
         n->uncorrectable_reads++;
-        return ecc;
+        return operation_error(n, ecc);
     }
     if (ecc == DS35_CORRECTED)
         n->corrected_reads++;
     size_t len = data ? bytes : 0;
     if (data && tn)
         len = DS35_PAGE + DS35_TAG_OFFSET + tn;
+    operation_stage(n, "read-cache-data/tags", page);
     if (len)
     {
         if ((r = cache_read(n, 0, n->page, len)) < 0)
-            return r;
+            return operation_error(n, r);
         memcpy(data, n->page, bytes);
         if (tn)
             memcpy(tags, n->page + DS35_PAGE + DS35_TAG_OFFSET, tn);
@@ -219,61 +268,99 @@ int ds35_read(struct ds35_nand *n, uint32_t page, void *data, size_t bytes, void
     else if (tn)
     {
         if ((r = cache_read(n, DS35_PAGE + DS35_TAG_OFFSET, n->page, tn)) < 0)
-            return r;
+            return operation_error(n, r);
         memcpy(tags, n->page, tn);
     }
     return ecc;
 }
 
+/* No masked comparisons or undocumented delay/retry: snapshot the exact B0
+ * write/readback used for raw BBM ECC switching. Reserved bits stay preserved. */
+static int bbm_feature(
+    struct ds35_nand *n, uint8_t value, uint32_t page, const char *set_phase, const char *get_phase)
+{
+    bool capture = n->operation.result >= 0;
+    operation_stage(n, set_phase, page);
+    if (capture)
+    {
+        n->operation.expected       = value;
+        n->operation.expected_valid = true;
+        n->operation.compare_mask   = 0xff;
+    }
+    uint8_t observed;
+    int     r = set_feature(n, 0xb0, value);
+    if (r >= 0)
+    {
+        if (capture)
+            n->operation.phase = get_phase;
+        r = feature(n, 0xb0, &observed);
+        if (capture)
+        {
+            n->operation.observed_valid = r >= 0;
+            if (r >= 0)
+                n->operation.observed = observed;
+        }
+    }
+    if (r >= 0 && observed != value)
+        r = DS35_IO;
+    if (r < 0)
+    {
+        n->fault = true;
+        return operation_error(n, r);
+    }
+    return DS35_OK;
+}
+
 int ds35_check_bad(struct ds35_nand *n, uint32_t block)
 {
-    if (!n || !block_valid(n, block))
+    if (!n)
         return DS35_EINVAL;
+    operation_begin(n, "BBM-guard", block * DS35_PAGES_PER_BLOCK);
+    if (!block_valid(n, block))
+        return operation_error(n, DS35_EINVAL);
     if (n->bad[block / 8] & (1u << (block % 8)))
         return DS35_BAD;
     if (n->checked[block / 8] & (1u << (block % 8)))
         return DS35_OK;
-    /* Table3.7 reserves OOB[0], but does not unambiguously exempt it from
-     * correction. Read factory/runtime markers RAW so ECC cannot hide one.
-     * Inspect BOTH first two pages, restore ECC before any normal data I/O.
-     */
+    /* Table3.7 reserves OOB[0]. Read BOTH first pages RAW, then restore ECC.
+     * Never replace the failing command/status with a subsequent NOT_READY.
+     * A poisoned transport cannot safely attempt another feature transaction. */
     uint8_t config, status;
-    int     r = feature(n, 0xb0, &config);
+    operation_stage(n, "BBM-get-original-B0", block * DS35_PAGES_PER_BLOCK);
+    int r = feature(n, 0xb0, &config);
+    if (r < 0)
+        return operation_error(n, r);
+    r = bbm_feature(n,
+        config & ~0x10u,
+        block * DS35_PAGES_PER_BLOCK,
+        "BBM-disable-ECC-set-B0",
+        "BBM-disable-ECC-get-B0");
     if (r < 0)
         return r;
-    if ((r = set_feature(n, 0xb0, config & ~0x10u)) < 0)
-        return r;
-    if ((r = feature(n, 0xb0, &status)) < 0 || status != (uint8_t)(config & ~0x10u))
-    {
-        n->fault = true;
-        return DS35_IO;
-    }
     int result = DS35_OK;
     for (uint32_t i = 0; i < 2; i++)
     {
-        r = page_to_cache(n, block * 64 + i, &status);
+        uint32_t page = block * DS35_PAGES_PER_BLOCK + i;
+        operation_stage(n, "BBM-page-to-cache/status", page);
+        r = page_to_cache(n, page, &status);
         if (r < 0)
-        {
-            result = r;
-            break;
-        }
+            return operation_error(n, r); /* Faulted: no restore replay. */
+        operation_stage(n, "BBM-cache-read-OOB0", page);
         if ((r = cache_read(n, DS35_PAGE, n->page, 1)) < 0)
-        {
-            result = r;
-            break;
-        }
+            return operation_error(n, r);
         if (n->page[0] != 0xff)
         {
             result = DS35_BAD;
             break;
         }
     }
-    int restore = set_feature(n, 0xb0, config);
-    if (restore < 0 || (r = feature(n, 0xb0, &status)) < 0 || status != config)
-    {
-        n->fault = true;
-        return DS35_IO;
-    }
+    r = bbm_feature(n,
+        config,
+        block * DS35_PAGES_PER_BLOCK,
+        "BBM-restore-ECC-set-B0",
+        "BBM-restore-ECC-get-B0");
+    if (r < 0)
+        return r; /* A marked block is NOT harmless if restoration failed. */
     if (result == DS35_BAD)
         n->bad[block / 8] |= 1u << (block % 8);
     if (result == DS35_OK)

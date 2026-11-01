@@ -56,15 +56,25 @@ struct ds35_shutdown_diagnostic
     bool        attempted, expected_valid, observed_valid;
 };
 
+struct ds35_operation_diagnostic
+{
+    const char *phase;
+    uint32_t    page;
+    int         result;
+    uint8_t     expected, observed, status, compare_mask;
+    bool        expected_valid, observed_valid, status_valid;
+};
+
 struct ds35_nand
 {
-    struct ds35_bus                 bus;
-    uint32_t                        first_block, block_count;
-    bool                            ready, writable, fault;
-    bool                            feature_saved;
-    uint8_t                         saved_feature;
-    struct ds35_shutdown_diagnostic shutdown;
-    uint32_t                        corrected_reads, uncorrectable_reads;
+    struct ds35_bus                  bus;
+    uint32_t                         first_block, block_count;
+    bool                             ready, writable, fault;
+    bool                             feature_saved;
+    uint8_t                          saved_feature;
+    struct ds35_shutdown_diagnostic  shutdown;
+    struct ds35_operation_diagnostic operation;
+    uint32_t                         corrected_reads, uncorrectable_reads;
     /* One shared-SRAM page bounce buffer, retained until DMA completes. */
     _Alignas(32) uint8_t page[DS35_PAGE + DS35_OOB];
     uint8_t bad[(DS35_BLOCKS + 7u) / 8u];
