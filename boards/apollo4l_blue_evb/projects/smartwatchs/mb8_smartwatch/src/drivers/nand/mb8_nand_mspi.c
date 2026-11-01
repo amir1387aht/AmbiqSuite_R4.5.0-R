@@ -14,6 +14,20 @@ static void    *mspi;
 static bool     poisoned, quad_enabled;
 static unsigned current_width, current_address_bytes, aux_width;
 static uint32_t target_divider, current_divider;
+#if WATCH_NAND_FULL_FORMAT
+static unsigned diagnostic_read_mode;
+
+static int read_mode(void *ctx, unsigned mode)
+{
+    (void)ctx;
+    if (!mspi || poisoned || !quad_enabled || mode > 4)
+        return DS35_NOT_READY;
+    /* This only selects policy; configure_phase proves idle before any actual
+     * clock/mode/pad change. No cache load, QE change or NAND command here. */
+    diagnostic_read_mode = mode;
+    return DS35_OK;
+}
+#endif
 static uint32_t tcb[256] __attribute__((section(".shared.nand"), aligned(32)));
 /* Bounded DMA bounce: caller may use TCM or an unaligned stack buffer. */
 static uint32_t bounce[(DS35_PAGE + DS35_OOB + 3) / 4]
@@ -253,7 +267,14 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
         abort_controller();
         return DS35_IO;
     }
-    if (p->dma && select_clock(target_divider, "quad-data-clock") < 0)
+    uint32_t data_divider = target_divider;
+#if WATCH_NAND_FULL_FORMAT
+    /* Mode3 persists for the complete format/write/remount session. Only the
+     * explicitly requested read-only48MHz diagnostic can raise it. */
+    if (diagnostic_read_mode && diagnostic_read_mode != 4)
+        data_divider = AM_HAL_MSPI_CLK_12MHZ;
+#endif
+    if (p->dma && select_clock(data_divider, "quad-data-clock") < 0)
         return DS35_IO;
     return DS35_OK;
 }
@@ -280,6 +301,10 @@ static int transfer(void *ctx,
     int r = mb8_nand_mspi_plan(header, hn, tx, rx, len, width, quad_enabled, &p);
     if (r < 0)
         return r;
+#if WATCH_NAND_FULL_FORMAT
+    if (p.opcode == 0x6b && diagnostic_read_mode == 2)
+        p.dma = false;
+#endif
     mb8_nand_diag_wire(p.opcode, p.address, (uint32_t)len, width);
     if ((r = configure_phase(&p)) < 0)
         return r;
@@ -296,6 +321,7 @@ static int transfer(void *ctx,
             .bSendAddr                                = p.address_bytes != 0,
             .ui32DeviceAddr                           = p.address,
             .bSendInstr                               = true,
+            .bTurnaround                              = p.dummy_clocks != 0,
             .ui16DeviceInstr                          = p.opcode,
             .pui32Buffer                              = bounce};
         status                       = am_hal_mspi_blocking_transfer(mspi, &t, 2000);
@@ -389,6 +415,10 @@ static int quad_ready(void *ctx, bool enabled)
     if (select_clock(
             AM_HAL_MSPI_CLK_12MHZ, enabled ? "quad-arm-serial-clock" : "shutdown-clock-down") < 0)
         return DS35_IO;
+#if WATCH_NAND_FULL_FORMAT
+    if (!enabled)
+        diagnostic_read_mode = 0;
+#endif
     quad_enabled = enabled;
     return DS35_OK;
 }
@@ -574,5 +604,9 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
     am_util_delay_us(5000);
     *bus = (struct ds35_bus){
         .transfer = transfer, .delay_us = delay, .data_width = 4, .quad_ready = quad_ready};
+#if WATCH_NAND_FULL_FORMAT
+    bus->read_mode       = read_mode;
+    diagnostic_read_mode = 3; /* Format builds never accelerate data by default. */
+#endif
     return DS35_OK;
 }

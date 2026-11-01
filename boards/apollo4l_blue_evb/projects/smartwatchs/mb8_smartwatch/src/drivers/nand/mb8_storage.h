@@ -10,9 +10,10 @@
 /* Call once from a dedicated, low-priority FreeRTOS storage worker, NOT ISR,
  * timer daemon, pre-scheduler startup, or the LVGL/render task. All yaffs_*
  * calls and unmount must run in that same worker; queue requests to it.
- * Startup creates its own worker after MCU/GPU initialization. No format API.
+ * Startup creates its own worker after MCU/GPU initialization. No ordinary
+ * format API; the explicit destructive boot is isolated behind FULL_FORMAT.
  * After success use yaffs_open/read/write/fsync/close under /nand.
- * Writes require board authorization AND read_only=false. A YAFFS partition
+ * Ordinary writes require board authorization AND read_only=false. A YAFFS partition
  * must be independently identified/provisioned; never use a stock-firmware
  * partition merely because the chip geometry matches.
  */
@@ -25,6 +26,12 @@ struct mb8_storage_usage
     uint32_t reserved_blocks, dead_blocks, checkpoint_blocks;
 };
 #if WATCH_NAND_YAFFS2
+struct ds35_nand;
+const struct ds35_nand *mb8_storage_protection_snapshot(void);
+#if WATCH_NAND_FULL_FORMAT
+int  mb8_storage_full_erase(void);
+bool mb8_storage_format_boot(void);
+#endif
 /* Startup worker only. ID-only probe has no accessible array range. */
 void mb8_storage_startup(void);
 int  mb8_storage_probe_only(void);

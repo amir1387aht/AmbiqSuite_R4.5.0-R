@@ -132,6 +132,21 @@ static void report_bus_failure(void)
 
 static void report_shutdown_failure(void)
 {
+    const struct ds35_nand *n = mb8_storage_protection_snapshot();
+    if (n->protection_saved && !n->protection_restored)
+    {
+        mb8_storage_log(
+            "[NAND protection] UNRESTORED phase=%s rc=%d saved-A0=%02x expected=%02x mask=BE; power-cycle/recovery required\r\n",
+            n->protection_phase ? n->protection_phase : "not-attempted",
+            n->protection_result,
+            (unsigned)n->saved_protection,
+            (unsigned)n->protection_expected);
+        if (n->protection_observed_valid)
+            mb8_storage_log("[NAND protection] observed-A0=%02x defined-diff=%02x\r\n",
+                (unsigned)n->protection_observed,
+                (unsigned)((n->protection_observed ^ n->protection_expected) &
+                           DS35_A0_DEFINED_MASK));
+    }
     const struct ds35_shutdown_diagnostic *d = mb8_storage_shutdown_diagnostic();
     if (!d->attempted || d->result >= 0)
         return;
@@ -215,6 +230,18 @@ static void startup_worker(void *unused)
     (void)unused;
     while (!watch_gpu_ready)
         vTaskDelay(pdMS_TO_TICKS(10));
+#if WATCH_NAND_FULL_FORMAT
+    mb8_storage_log(
+        "[NAND FORMAT] DESTRUCTIVE boot requested; ERASES AGAIN on every reboot. Reflash FULL_FORMAT=0 afterward.\r\n");
+    bool formatted = mb8_storage_format_boot();
+    mb8_storage_log(
+        "[NAND FORMAT] %s; %s\r\n", formatted ? "PASS" : "INCOMPLETE/FAIL", mb8_storage_status());
+    report_shutdown_failure();
+    report_bus_failure();
+    report();
+    for (;;)
+        vTaskSuspend(NULL);
+#endif
     mb8_storage_log("[NAND] test-write request=%u (default0); actual writes also require "
                     "confirmed provisioned partition + authorization\r\n",
         (unsigned)WATCH_NAND_TEST_WRITE);

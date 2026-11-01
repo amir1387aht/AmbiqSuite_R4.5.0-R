@@ -230,13 +230,26 @@ int ds35_allow_writes(struct ds35_nand *n)
         return r;
     if (protection & 0x80)
         return DS35_READ_ONLY; /* Never override BRWD. */
-    /* Explicitly authorized provisioning only: volatile whole-array BP unlock.
-     * Every mutating API separately enforces the selected partition boundaries.
-     */
-    if ((r = set_feature(n, 0xa0, 0)) < 0 || (r = feature(n, 0xa0, &protection)) < 0)
+    if (!n->protection_saved)
+    {
+        n->saved_protection = protection;
+        n->protection_saved = true;
+    }
+    n->protection_phase          = "unlock-set-A0";
+    n->protection_expected       = protection & (uint8_t)~DS35_A0_LOCK_MASK;
+    n->protection_observed_valid = false;
+    r                            = set_feature(n, 0xa0, n->protection_expected);
+    if (r >= 0)
+    {
+        n->protection_phase          = "unlock-get-A0";
+        r                            = feature(n, 0xa0, &n->protection_observed);
+        n->protection_observed_valid = r >= 0;
+    }
+    if (r >= 0 && ((n->protection_observed ^ n->protection_expected) & DS35_A0_DEFINED_MASK))
+        r = DS35_READ_ONLY;
+    n->protection_result = r;
+    if (r < 0)
         return r;
-    if (protection != 0)
-        return DS35_READ_ONLY;
     n->writable = true;
     return DS35_OK;
 }
@@ -283,7 +296,7 @@ int ds35_read(struct ds35_nand *n, uint32_t page, void *data, size_t bytes, void
     return ecc;
 }
 
-#if WATCH_NAND_STARTUP_TESTS
+#if WATCH_NAND_STARTUP_TESTS || WATCH_NAND_FULL_FORMAT
 int ds35_read_x1_reference(struct ds35_nand *n, uint32_t page, void *data, size_t bytes)
 {
     if (!n)
@@ -316,6 +329,120 @@ int ds35_read_x1_reference(struct ds35_nand *n, uint32_t page, void *data, size_
             return operation_error(n, r);
     }
     return ecc;
+}
+#endif
+
+#if WATCH_NAND_FULL_FORMAT
+static uint32_t read_hash(const uint8_t *data, size_t len)
+{
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < len; i++)
+        hash = (hash ^ data[i]) * 16777619u;
+    return hash;
+}
+
+int ds35_read_consensus(
+    struct ds35_nand *n, uint32_t page, bool comparison48, struct ds35_read_consensus *e)
+{
+    if (!e)
+        return DS35_EINVAL;
+    memset(e, 0, sizeof(*e));
+    if (!n || !page_valid(n, page) || n->writable || n->bus.data_width != 4 || !n->bus.read_mode)
+        return DS35_EINVAL;
+    memset(e, 0, sizeof(*e));
+    operation_begin(n, "preflight-page/status", page);
+    uint8_t status, other[256];
+    int     r = page_to_cache(n, page, &status);
+    if (r < 0)
+        return operation_error(n, r);
+    int ecc = ds35_ecc_status(status);
+    if (ecc < 0)
+        return operation_error(n, ecc);
+    /* Same row/cache, no13 reload between the three paths. Repeat each complete
+     * page twice; equivalent windows avoid comparing different CS geometries. */
+    for (unsigned pass = 0; pass < 2; pass++)
+    {
+        e->pass = pass;
+        r       = n->bus.read_mode(n->bus.ctx, 1);
+        if (r < 0)
+        {
+            n->fault = true;
+            break;
+        }
+        for (uint16_t col = 0; col < DS35_PAGE && r >= 0; col += 256)
+        {
+            uint8_t h[] = {0x03, (uint8_t)(col >> 8), (uint8_t)col, 0};
+            operation_stage(n, "preflight-canonical03-PIO12", page);
+            e->mode = 1;
+            r       = transfer(n, h, 4, NULL, pass ? other : n->page + col, 256, 1);
+            if (r >= 0 && pass)
+                for (unsigned i = 0; i < sizeof(other); i++)
+                    if (other[i] != n->page[col + i])
+                    {
+                        e->mismatch      = true;
+                        e->offset        = col + i;
+                        e->compared_hash = read_hash(other, sizeof(other));
+                        memcpy(e->serial_bytes, n->page + col, sizeof(e->serial_bytes));
+                        memcpy(e->compared_bytes, other, sizeof(e->compared_bytes));
+                        r = DS35_IO;
+                        break;
+                    }
+        }
+        if (r < 0)
+            break;
+        e->serial_hash = read_hash(n->page, DS35_PAGE);
+        for (unsigned mode = comparison48 ? 4u : 2u; mode <= (comparison48 ? 4u : 3u); mode++)
+        {
+            e->mode = mode;
+            r       = n->bus.read_mode(n->bus.ctx, mode);
+            if (r < 0)
+            {
+                n->fault = true;
+                break;
+            }
+            for (uint16_t col = 0; col < DS35_PAGE; col += 256)
+            {
+                uint8_t h[] = {0x6b, (uint8_t)(col >> 8), (uint8_t)col, 0};
+                operation_stage(n,
+                    mode == 2   ? "preflight-quad-PIO12"
+                    : mode == 3 ? "preflight-quad-DMA12"
+                                : "diagnostic-quad-DMA48",
+                    page);
+                r = transfer(n, h, 4, NULL, other, sizeof(other), 4);
+                if (r < 0)
+                    break;
+                for (unsigned i = 0; i < sizeof(other); i++)
+                    if (other[i] != n->page[col + i])
+                    {
+                        e->mismatch      = true;
+                        e->offset        = col + i;
+                        e->compared_hash = read_hash(other, sizeof(other));
+                        memcpy(e->serial_bytes, n->page + col, sizeof(e->serial_bytes));
+                        memcpy(e->compared_bytes, other, sizeof(e->compared_bytes));
+                        r = DS35_IO;
+                        break;
+                    }
+                if (r < 0)
+                    break;
+            }
+            if (r < 0)
+                break;
+        }
+        if (r < 0)
+            break;
+    }
+    /* Reset selection policy to conservative12 on every healthy path, including
+     * a data disagreement. A poisoned transport is never replayed. */
+    if (!n->fault)
+    {
+        int reset              = n->bus.read_mode(n->bus.ctx, 3);
+        e->policy_reset_result = reset;
+        if (reset < 0)
+            n->fault = true;
+        if (r >= 0)
+            r = reset;
+    }
+    return r < 0 ? operation_error(n, r) : ecc;
 }
 #endif
 
@@ -416,39 +543,82 @@ int ds35_check_bad(struct ds35_nand *n, uint32_t block)
 int ds35_program(
     struct ds35_nand *n, uint32_t page, const void *data, size_t bytes, const void *tags, size_t tn)
 {
-    if (!n || !page_valid(n, page) || !data || bytes != DS35_PAGE || !tags || tn == 0 ||
-        tn > DS35_TAG_CAPACITY)
+    if (!n)
         return DS35_EINVAL;
+    operation_begin(n, "program-guard", page);
+    if (!page_valid(n, page) || !data || bytes != DS35_PAGE || !tags || !tn ||
+        tn > DS35_TAG_CAPACITY)
+        return operation_error(n, DS35_EINVAL);
     if (!n->writable)
-        return DS35_READ_ONLY;
-    int r = ds35_check_bad(n, page / 64);
+        return operation_error(n, DS35_READ_ONLY);
+    int r = ds35_check_bad(n, page / DS35_PAGES_PER_BLOCK);
     if (r < 0)
-        return r;
+        return operation_error(n, r);
     memset(n->page, 0xff, DS35_PROGRAM_BYTES);
     memcpy(n->page, data, bytes);
     memcpy(n->page + DS35_PAGE + DS35_TAG_OFFSET, tags, tn);
     uint8_t h[] = {n->bus.data_width == 4 ? 0x32 : 0x02, 0, 0}, status;
-    if ((r = write_enable(n)) < 0 ||
-        (r = transfer(n, h, 3, n->page, NULL, DS35_PROGRAM_BYTES, n->bus.data_width)) < 0 ||
-        (r = row_command(n, 0x10, page)) < 0 || (r = wait_ready(n, 5000, &status)) < 0)
-        return r;
-    return (status & 8) ? DS35_IO : DS35_OK; /* tPROG max700us. */
+    operation_stage(n, "program-WEL", page);
+    r = write_enable(n);
+    if (r >= 0)
+    {
+        operation_stage(n, "program-load", page);
+        r = transfer(n, h, 3, n->page, NULL, DS35_PROGRAM_BYTES, n->bus.data_width);
+    }
+    if (r >= 0)
+    {
+        operation_stage(n, "program-execute", page);
+        r = row_command(n, 0x10, page);
+    }
+    if (r >= 0)
+    {
+        operation_stage(n, "program-status", page);
+        r = wait_ready(n, 5000, &status);
+        if (r >= 0)
+        {
+            n->operation.status       = status;
+            n->operation.status_valid = true;
+            if (status & 8u)
+                r = DS35_IO;
+        }
+    }
+    return r < 0 ? operation_error(n, r) : DS35_OK;
 }
 
 int ds35_erase(struct ds35_nand *n, uint32_t block)
 {
-    if (!n || !block_valid(n, block))
+    if (!n)
         return DS35_EINVAL;
+    uint32_t page = block * DS35_PAGES_PER_BLOCK;
+    operation_begin(n, "erase-guard", page);
+    if (!block_valid(n, block))
+        return operation_error(n, DS35_EINVAL);
     if (!n->writable)
-        return DS35_READ_ONLY;
-    int     r = ds35_check_bad(n, block);
-    uint8_t status;
+        return operation_error(n, DS35_READ_ONLY);
+    int r = ds35_check_bad(n, block);
     if (r < 0)
-        return r;
-    if ((r = write_enable(n)) < 0 || (r = row_command(n, 0xd8, block * 64)) < 0 ||
-        (r = wait_ready(n, 20000, &status)) < 0)
-        return r;
-    return (status & 4) ? DS35_IO : DS35_OK; /* tBERS max10ms. */
+        return operation_error(n, r);
+    uint8_t status;
+    operation_stage(n, "erase-WEL", page);
+    r = write_enable(n);
+    if (r >= 0)
+    {
+        operation_stage(n, "erase-D8", page);
+        r = row_command(n, 0xd8, page);
+    }
+    if (r >= 0)
+    {
+        operation_stage(n, "erase-status", page);
+        r = wait_ready(n, 20000, &status);
+        if (r >= 0)
+        {
+            n->operation.status       = status;
+            n->operation.status_valid = true;
+            if (status & 4u)
+                r = DS35_IO;
+        }
+    }
+    return r < 0 ? operation_error(n, r) : DS35_OK;
 }
 
 int ds35_mark_bad(struct ds35_nand *n, uint32_t block)
@@ -517,6 +687,11 @@ int ds35_shutdown(struct ds35_nand *n)
         .expected                                 = n->saved_feature};
     if (n->fault)
     {
+        if (n->protection_saved)
+        {
+            n->protection_phase  = "protection-unrestored/transport-poisoned-no-replay";
+            n->protection_result = DS35_NOT_READY;
+        }
         d->phase  = "shutdown-prior-transport-fault";
         d->result = DS35_NOT_READY;
         return d->result;
@@ -536,6 +711,46 @@ int ds35_shutdown(struct ds35_nand *n)
             d->result = r;
             n->fault  = true;
             return r;
+        }
+        if (n->protection_saved)
+        {
+            /* A0 survives RESET (rev07 section3.2). Never leave an authorized
+             * session unlocked on a healthy close; WRDI precedes restoration. */
+            n->protection_phase = "shutdown-WRDI";
+            r                   = command(n, 0x04);
+            if (r >= 0)
+            {
+                uint8_t status;
+                n->protection_phase = "shutdown-check-WEL-clear";
+                r                   = feature(n, 0xc0, &status);
+                if (r >= 0 && (status & 2u))
+                    r = DS35_IO;
+            }
+            if (r >= 0)
+            {
+                n->protection_phase          = "shutdown-set-A0";
+                n->protection_expected       = n->saved_protection;
+                n->protection_observed_valid = false;
+                r                            = set_feature(n, 0xa0, n->saved_protection);
+            }
+            if (r >= 0)
+            {
+                n->protection_phase          = "shutdown-get-A0";
+                r                            = feature(n, 0xa0, &n->protection_observed);
+                n->protection_observed_valid = r >= 0;
+            }
+            if (r >= 0 && ((n->protection_observed ^ n->saved_protection) & DS35_A0_DEFINED_MASK))
+                r = DS35_IO;
+            n->protection_result = r;
+            if (r < 0)
+            {
+                d->phase  = "shutdown-protection-unrestored";
+                d->result = r;
+                n->fault  = true;
+                return r;
+            }
+            n->protection_restored = true;
+            n->protection_saved    = false;
         }
         d->phase = "shutdown-set-B0";
         r        = set_feature(n, 0xb0, n->saved_feature);
