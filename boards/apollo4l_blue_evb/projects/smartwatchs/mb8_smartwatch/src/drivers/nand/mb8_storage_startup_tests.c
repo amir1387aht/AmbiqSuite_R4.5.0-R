@@ -99,144 +99,258 @@ static void tree_print_name(
  */
 #define STOCK_CANDIDATE_LIMIT 128u
 #define STOCK_ID_MASK         0x0fffffffu
-_Static_assert(sizeof(struct yaffs_obj_hdr) == 512 &&
-    offsetof(struct yaffs_obj_hdr, name) == 10 &&
-    offsetof(struct yaffs_obj_hdr, file_size_low) == 292 &&
-    offsetof(struct yaffs_obj_hdr, file_size_high) == 496, "YAFFS header layout changed");
+_Static_assert(sizeof(struct yaffs_obj_hdr) == 512 && offsetof(struct yaffs_obj_hdr, name) == 10 &&
+                   offsetof(struct yaffs_obj_hdr, file_size_low) == 292 &&
+                   offsetof(struct yaffs_obj_hdr, file_size_high) == 496,
+    "YAFFS header layout changed");
 
 struct stock_header
 {
     uint32_t sequence, object, parent, type;
     uint64_t size;
-    bool extra, shrink, shadows;
-    char name[256];
+    bool     extra, shrink, shadows;
+    char     name[256];
 };
 
 static uint32_t stock_u32(const unsigned char *p)
 {
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 |
-           (uint32_t)p[3] << 24;
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-static bool stock_header_decode(const unsigned char *page, size_t bytes, struct stock_header *h)
+enum stock_rejection
 {
-    if (!page || !h || bytes != 2048)
-        return false;
+    STOCK_HEADER,
+    STOCK_REJECT_LENGTH,
+    STOCK_REJECT_SEQUENCE,
+    STOCK_REJECT_CHUNK,
+    STOCK_REJECT_TYPE,
+    STOCK_REJECT_PARENT,
+    STOCK_REJECT_OBJECT,
+    STOCK_REJECT_NAME,
+    STOCK_REJECT_SIZE_COUNT,
+    STOCK_REASON_COUNT
+};
+
+static const char *const stock_reasons[STOCK_REASON_COUNT] = {"candidate",
+    "length",
+    "sequence",
+    "data-chunk/flags",
+    "type",
+    "parent",
+    "object",
+    "name",
+    "size/count"};
+
+static enum stock_rejection stock_header_classify(
+    const unsigned char *page, size_t bytes, struct stock_header *h)
+{
+    if (!page || !h || bytes != DS35_PAGE)
+        return STOCK_REJECT_LENGTH;
     const unsigned char *tags = page + 2032;
-    uint32_t seq = stock_u32(tags), object = stock_u32(tags + 4);
-    uint32_t chunk = stock_u32(tags + 8), count = stock_u32(tags + 12);
-    uint32_t type = stock_u32(page), parent = stock_u32(page + 4);
-    bool extra = (chunk & 0x80000000u) != 0;
-    if (seq < YAFFS_LOWEST_SEQUENCE_NUMBER || seq >= YAFFS_HIGHEST_SEQUENCE_NUMBER ||
-        type < 1 || type > 5 || !parent || parent > STOCK_ID_MASK ||
-        (!extra && (chunk != 0 || count != 0)) || (extra && (chunk & 0x10000000u)))
-        return false;
+    uint32_t             seq = stock_u32(tags), object = stock_u32(tags + 4);
+    uint32_t             chunk = stock_u32(tags + 8), count = stock_u32(tags + 12);
+    uint32_t             type = stock_u32(page), parent = stock_u32(page + 4);
+    bool                 extra = (chunk & 0x80000000u) != 0;
+    if (seq < YAFFS_LOWEST_SEQUENCE_NUMBER || seq >= YAFFS_HIGHEST_SEQUENCE_NUMBER)
+        return STOCK_REJECT_SEQUENCE;
+    if ((!extra && (chunk != 0 || count != 0)) || (extra && (chunk & 0x10000000u)))
+        return STOCK_REJECT_CHUNK;
+    if (type < 1 || type > 5 || (extra && (object >> 28) != type))
+        return STOCK_REJECT_TYPE;
+    if (!parent || parent > STOCK_ID_MASK || (extra && (chunk & STOCK_ID_MASK) != parent))
+        return STOCK_REJECT_PARENT;
     if (extra)
-    {
-        if ((object >> 28) != type || (chunk & STOCK_ID_MASK) != parent)
-            return false;
         object &= STOCK_ID_MASK;
-    }
     if (!object || object > STOCK_ID_MASK || object == YAFFS_OBJECTID_SUMMARY ||
         object == YAFFS_OBJECTID_CHECKPOINT_DATA || (object == parent && object != 1))
-        return false;
+        return STOCK_REJECT_OBJECT;
     size_t length = 0;
     while (length < 256 && page[10 + length])
     {
         if (page[10 + length] == '/')
-            return false;
+            return STOCK_REJECT_NAME;
         length++;
     }
     if (length == 256 || (!length && object != YAFFS_OBJECTID_ROOT) ||
-        (length == 1 && page[10] == '.') ||
-        (length == 2 && page[10] == '.' && page[11] == '.'))
-        return false;
-    /* This diagnostic recognizes the byte-name YAFFS layout, not arbitrary
-     * UTF16/custom encodings. Root alone may have an empty name. */
+        (length == 1 && page[10] == '.') || (length == 2 && page[10] == '.' && page[11] == '.'))
+        return STOCK_REJECT_NAME;
+    /* Byte-name YAFFS only; no guessed UTF16/custom name decoding. */
     uint32_t high = stock_u32(page + 496), low = stock_u32(page + 292);
     uint64_t size = (uint64_t)(high == UINT32_MAX ? 0 : high) << 32 | low;
     if (type == 1 && (size > (uint64_t)DS35_PAGE * DS35_PAGES_PER_BLOCK * DS35_BLOCKS ||
-                     (extra && count != size)))
-        return false;
+                         (extra && count != size)))
+        return STOCK_REJECT_SIZE_COUNT;
     if (type == 4 && (!stock_u32(page + 296) || stock_u32(page + 296) > STOCK_ID_MASK ||
-                     (extra && count != stock_u32(page + 296))))
-        return false;
+                         (extra && count != stock_u32(page + 296))))
+        return STOCK_REJECT_SIZE_COUNT;
     if (extra && type != 1 && type != 4 && count != 0)
-        return false;
+        return STOCK_REJECT_SIZE_COUNT;
     memset(h, 0, sizeof(*h));
     h->sequence = seq;
-    h->object = object;
-    h->parent = parent;
-    h->type = type;
-    h->size = type == 1 ? size : 0;
-    h->extra = extra;
-    h->shrink = stock_u32(page + 492) == 1 || stock_u32(page + 508) == 1 ||
-                (extra && (chunk & 0x40000000u));
-    h->shadows = stock_u32(page + 488) != 0 || stock_u32(page + 504) != 0 ||
-                 (extra && (chunk & 0x20000000u));
+    h->object   = object;
+    h->parent   = parent;
+    h->type     = type;
+    h->size     = type == 1 ? size : 0;
+    h->extra    = extra;
+    h->shrink   = stock_u32(page + 492) == 1 || stock_u32(page + 508) == 1 ||
+                  (extra && (chunk & 0x40000000u));
+    h->shadows  = stock_u32(page + 488) != 0 || stock_u32(page + 504) != 0 ||
+                  (extra && (chunk & 0x20000000u));
     memcpy(h->name, page + 10, length);
-    return true;
+    return STOCK_HEADER;
 }
 
 struct stock_inventory
 {
-    unsigned pages, candidates;
+    unsigned pages, candidates, erased, zero, nonempty, plausible_sequence, header_shape;
+    unsigned sample_nonempty, sample_plausible;
+    unsigned rejected[STOCK_REASON_COUNT];
 };
 
 static bool stock_inventory_page(uint32_t page, const uint8_t *data, void *context)
 {
     struct stock_inventory *inventory = context;
-    struct stock_header header;
+    struct stock_header     header;
     inventory->pages++;
-    if ((inventory->pages & 255u) == 0)
-        mb8_storage_log("[NAND stock] progress pages=%u physical-page=%u\r\n",
-            inventory->pages, (unsigned)page);
-    if (!stock_header_decode(data, DS35_PAGE, &header))
+    if ((inventory->pages & 1023u) == 0)
+        mb8_storage_log("[NAND stock] progress census-pages=%u physical-page=%u\r\n",
+            inventory->pages,
+            (unsigned)page);
+    bool erased = true, zero = true;
+    for (size_t i = 0; i < DS35_PAGE; i++)
+    {
+        erased &= data[i] == 0xff;
+        zero &= data[i] == 0;
+    }
+    if (erased || zero)
+    {
+        inventory->erased += erased;
+        inventory->zero += zero;
+        return true;
+    }
+    inventory->nonempty++;
+    uint32_t seq = stock_u32(data + 2032), chunk = stock_u32(data + 2040);
+    bool     plausible = seq >= YAFFS_LOWEST_SEQUENCE_NUMBER && seq < YAFFS_HIGHEST_SEQUENCE_NUMBER;
+    inventory->plausible_sequence += plausible;
+    inventory->header_shape += chunk == 0 || ((chunk & 0x80000000u) && !(chunk & 0x10000000u));
+    enum stock_rejection reason = stock_header_classify(data, DS35_PAGE, &header);
+    inventory->rejected[reason]++;
+    /* At most8 fixed-offset metadata-word samples, never a payload/name dump.
+     * Interpretation is UNVALIDATED when a page is not an accepted header. */
+    bool sample = false;
+    if (plausible && inventory->sample_plausible < 4)
+    {
+        inventory->sample_plausible++;
+        sample = true;
+    }
+    else if (inventory->sample_nonempty < 4)
+    {
+        inventory->sample_nonempty++;
+        sample = true;
+    }
+    if (sample)
+        mb8_storage_log("[NAND stock] META_WORDS_UNVALIDATED page=%u class=%s "
+                        "tail@2032=%08x/%08x/%08x/%08x header-type/parent@0=%08x/%08x\r\n",
+            (unsigned)page,
+            stock_reasons[reason],
+            (unsigned)seq,
+            (unsigned)stock_u32(data + 2036),
+            (unsigned)chunk,
+            (unsigned)stock_u32(data + 2044),
+            (unsigned)stock_u32(data),
+            (unsigned)stock_u32(data + 4));
+    if (reason != STOCK_HEADER)
         return true;
     inventory->candidates++;
-    mb8_storage_log(
-        "[NAND stock] CANDIDATE_HEADER page=%u seq=%08x id=%u parent=%u type=%u "
-        "size=%llu extra=%u shrink=%u shadows=%u page-fnv32=%08x\r\n",
-        (unsigned)page, (unsigned)header.sequence, (unsigned)header.object,
-        (unsigned)header.parent, (unsigned)header.type, (unsigned long long)header.size,
-        (unsigned)header.extra, (unsigned)header.shrink, (unsigned)header.shadows,
+    mb8_storage_log("[NAND stock] CANDIDATE_HEADER page=%u seq=%08x id=%u parent=%u type=%u "
+                    "size=%llu extra=%u shrink=%u shadows=%u page-fnv32=%08x\r\n",
+        (unsigned)page,
+        (unsigned)header.sequence,
+        (unsigned)header.object,
+        (unsigned)header.parent,
+        (unsigned)header.type,
+        (unsigned long long)header.size,
+        (unsigned)header.extra,
+        (unsigned)header.shrink,
+        (unsigned)header.shadows,
         (unsigned)checksum(data, DS35_PAGE));
-    /* Shared bounded escaping, but a distinct stock prefix: no inferred paths. */
-    tree_print_name("[NAND stock]", header.name, 0, "CANDIDATE name only; NOT live path", (long long)header.size);
+    tree_print_name("[NAND stock]",
+        header.name,
+        0,
+        "CANDIDATE name only; NOT live path",
+        (long long)header.size);
     return inventory->candidates < STOCK_CANDIDATE_LIMIT;
 }
 
 bool mb8_storage_startup_stock_inventory(void)
 {
     struct stock_inventory inventory = {0};
-    struct mb8_stock_scan summary = {0};
+    struct mb8_stock_scan  summary   = {0};
     mb8_storage_log(
-        "[NAND stock] TEMP RO CANDIDATE_HEADER survey; may include OLD/DELETED headers. "
+        "[NAND stock] TEMP RO CANDIDATE_HEADER census; may include OLD/DELETED headers. "
         "NOT a mounted/live tree; no contents/used/free inference.\r\n");
     mb8_storage_log(
-        "[NAND stock] coverage: blocks0..%u ALL64 pages; blocks%u..1023 page0 ONLY; "
-        "max%u main-page reads, cap%u candidates, time%ums; "
-        "inband2032+16 byte-name layout\r\n",
-        MB8_STOCK_FULL_BLOCKS - 1u, MB8_STOCK_FULL_BLOCKS,
-        MB8_STOCK_FULL_BLOCKS * DS35_PAGES_PER_BLOCK + DS35_BLOCKS - MB8_STOCK_FULL_BLOCKS,
-        STOCK_CANDIDATE_LIMIT, MB8_STOCK_SCAN_MS);
+        "[NAND stock] coverage sequential physical-pages=%u..65535; cap%u candidates, "
+        "time%ums between operations +bounded in-flight/cleanup; inband2032+16 byte-name layout\r\n",
+        MB8_STOCK_SCAN_FIRST_PAGE,
+        STOCK_CANDIDATE_LIMIT,
+        MB8_STOCK_SCAN_MS);
     int r = mb8_storage_raw_inventory(stock_inventory_page, &inventory, &summary);
+    mb8_storage_log("[NAND stock] serial/quad %s sampled-pages-agree=%u factory-bad-skipped=%u; "
+                    "03/x1/12MHz8x256 vs6B/x4/target2048; NOT global data authentication\r\n",
+        summary.reference_available ? "comparison" : "SKIP (x1 backend, no independent quad)",
+        (unsigned)summary.reference_agree,
+        (unsigned)summary.reference_bad);
+    if (summary.mismatch)
+        mb8_storage_log(
+            "[NAND stock] DISAGREEMENT page=%u first-offset=%u "
+            "quad-fnv32=%08x serial-fnv32=%08x; data NOT trusted, no differing bytes dumped\r\n",
+            (unsigned)summary.mismatch_page,
+            (unsigned)summary.mismatch_offset,
+            (unsigned)summary.quad_fingerprint,
+            (unsigned)summary.serial_fingerprint);
+    mb8_storage_log("[NAND stock] census all-FF=%u all-zero=%u nonempty=%u "
+                    "tail-sequence-plausible=%u tail-header-shape=%u metadata-word-samples=%u\r\n",
+        inventory.erased,
+        inventory.zero,
+        inventory.nonempty,
+        inventory.plausible_sequence,
+        inventory.header_shape,
+        inventory.sample_nonempty + inventory.sample_plausible);
+    for (unsigned reason = 1; reason < STOCK_REASON_COUNT; reason++)
+        mb8_storage_log("[NAND stock] nonempty-reject %s=%u\r\n",
+            stock_reasons[reason],
+            inventory.rejected[reason]);
     mb8_storage_log(
-        "[NAND stock] INCOMPLETE partial survey %s rc=%d pages=%u candidates=%u "
-        "bad-blocks=%u corrected-pages=%u stop=%s; omitted pages/encodings/history "
-        "prevent a current file tree\r\n",
-        r < 0 ? "FAIL" : "DONE", r, (unsigned)summary.pages, inventory.candidates,
-        (unsigned)summary.bad_blocks, (unsigned)summary.corrected_pages,
-        r < 0 ? "read/cleanup-error" : summary.time_limited ? "time-budget" :
-        summary.visitor_stopped ? "candidate-cap" : "scheduled-coverage");
+        "[NAND stock] INCOMPLETE forensic inventory %s rc=%d coverage=%s "
+        "first-page=%u next-page=%u pages=%u candidates=%u bad-blocks=%u skipped-bad-pages=%u "
+        "corrected-census-pages=%u stop=%s; NOT current tree/empty-space proof\r\n",
+        r < 0 ? "FAIL" : "DONE",
+        r,
+        summary.next_page == DS35_BLOCKS * DS35_PAGES_PER_BLOCK ? "requested-range-complete"
+                                                                : "partial",
+        (unsigned)summary.first_page,
+        (unsigned)summary.next_page,
+        (unsigned)summary.pages,
+        inventory.candidates,
+        (unsigned)summary.bad_blocks,
+        (unsigned)summary.bad_pages,
+        (unsigned)summary.corrected_pages,
+        r < 0                     ? "read/reference/cleanup-error"
+        : summary.time_limited    ? "time-budget"
+        : summary.visitor_stopped ? "candidate-cap"
+                                  : "range-end");
     if (r < 0)
     {
         const struct mb8_storage_raw_diagnostic *d = mb8_storage_raw_diagnostic();
         mb8_storage_log("[NAND stock] phase=%s physical-page=%u primary=%d shutdown=%d bus=%d\r\n",
-            d->phase ? d->phase : "unavailable", (unsigned)d->page, d->primary_result,
-            d->shutdown_result, d->bus_result);
+            d->phase ? d->phase : "unavailable",
+            (unsigned)d->page,
+            d->primary_result,
+            d->shutdown_result,
+            d->bus_result);
         mb8_storage_report_diagnostics();
-        mb8_storage_log("[NAND stock] remaining filesystem checks SKIP after inventory fault\r\n");
+        mb8_storage_log("[NAND stock] remaining filesystem checks SKIP after census fault\r\n");
     }
     return r >= 0;
 }

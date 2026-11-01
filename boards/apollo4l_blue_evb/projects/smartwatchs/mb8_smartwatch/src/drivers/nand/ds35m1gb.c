@@ -283,6 +283,42 @@ int ds35_read(struct ds35_nand *n, uint32_t page, void *data, size_t bytes, void
     return ecc;
 }
 
+#if WATCH_NAND_STARTUP_TESTS
+int ds35_read_x1_reference(struct ds35_nand *n, uint32_t page, void *data, size_t bytes)
+{
+    if (!n)
+        return DS35_EINVAL;
+    operation_begin(n, "serial-reference-guard", page);
+    if (!page_valid(n, page) || n->writable || n->bus.data_width != 4 || !data ||
+        bytes != DS35_PAGE)
+        return operation_error(n, DS35_EINVAL);
+    uint8_t status;
+    operation_stage(n, "serial-reference-page/status", page);
+    int r = page_to_cache(n, page, &status);
+    if (r < 0)
+        return operation_error(n, r);
+    int ecc = ds35_ecc_status(status);
+    if (ecc < 0)
+    {
+        n->uncorrectable_reads++;
+        return operation_error(n, ecc);
+    }
+    if (ecc == DS35_CORRECTED)
+        n->corrected_reads++;
+    /* DS35 rev07 Table1.3/Fig3.6:03, two column bytes, eight dummy clocks,
+     * SO/D1 data. Bound each PIO burst to256B; no global bus-width mutation. */
+    for (uint16_t column = 0; column < DS35_PAGE; column += 256)
+    {
+        uint8_t header[] = {0x03, (uint8_t)(column >> 8), (uint8_t)column, 0};
+        operation_stage(n, "serial-reference-cache03", page);
+        r = transfer(n, header, sizeof(header), NULL, (uint8_t *)data + column, 256, 1);
+        if (r < 0)
+            return operation_error(n, r);
+    }
+    return ecc;
+}
+#endif
+
 /* Snapshot complete B0 bytes for BBM ECC switching; verify every documented
  * bit, tolerating only reserved readback differences. No delay/retry changes. */
 static int bbm_feature(

@@ -94,6 +94,11 @@ int ds35_shutdown(struct ds35_nand *);
 int ds35_allow_writes(struct ds35_nand *);
 int ds35_read(
     struct ds35_nand *, uint32_t page, void *data, size_t bytes, void *tags, size_t tag_bytes);
+#if WATCH_NAND_STARTUP_TESTS
+/* TEMP RO cross-check only: full main page via8 separate03/x1 cache reads.
+ * Does not change the configured bus width, QE or write authorization. */
+int ds35_read_x1_reference(struct ds35_nand *, uint32_t page, void *, size_t);
+#endif
 int ds35_program(struct ds35_nand *,
     uint32_t    page,
     const void *data,

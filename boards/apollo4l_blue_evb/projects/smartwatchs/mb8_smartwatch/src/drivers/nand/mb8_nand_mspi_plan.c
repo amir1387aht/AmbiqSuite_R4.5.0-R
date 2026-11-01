@@ -70,6 +70,21 @@ int mb8_nand_mspi_plan(const uint8_t *h,
             p->address_bytes = 3;
             p->address       = ((uint32_t)h[2] << 8) | h[3];
             break;
+#if WATCH_NAND_STARTUP_TESTS
+        case 0x03:
+        {
+            if (hn != 4 || width != 1 || !rx || !len || len > 256 || (h[1] & 0xf0) || h[3])
+                return DS35_EINVAL;
+            uint32_t column = ((uint32_t)h[1] << 8) | h[2];
+            if (column >= DS35_PAGE + DS35_OOB || len > DS35_PAGE + DS35_OOB - column)
+                return DS35_EINVAL;
+            /* Serial only:3 address bytes emit column2 + dummy0. Do NOT add
+             * TURN clocks too; no change to quad DMA's8-clock turnaround. */
+            p->address_bytes = 3;
+            p->address       = column << 8;
+            break;
+        }
+#endif
         case 0x6b:
         case 0x32:
         {

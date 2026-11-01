@@ -342,30 +342,73 @@ Upstream format references (pinned YAFFS commit recorded above):
 https://github.com/Aleph-One-Ltd/yaffs2/blob/474b3acb927d27b2305618aaf24456b9d33fe91b/core/yaffs_tagsmarshall.c
 https://github.com/Aleph-One-Ltd/yaffs2/blob/474b3acb927d27b2305618aaf24456b9d33fe91b/core/yaffs_packedtags2.c
 
-Plain flash now runs a TEMPORARY metadata-only stock survey after three RAW
-repeats pass. This NEVER mounts/adopts the stock partition, changes our own OOB4
-YAFFS profile, enables writes or interprets package asset names as watch files.
-One closed strictly RO raw session checks strict ID, factory bad markers and
-on-die ECC. Explicit schedule: ALL64 pages in blocks0..63, then ONLY page0 in
-blocks64..1023: max5056 main reads plus at most2048 one-byte BBM reads.
-Time budget15,000ms (including preemption/logging/yields),128candidate cap;
-cleanup still runs after stop. Each individual operation retains existing
-bounded timeouts. Worker yields at least every16 main pages and after bad-block
-skips; no recursive calls/heap growth. Temporary additional static RAM2048B;
-header/name workspace is bounded on worker stack (512B logger nested). No file
-contents are emitted. Constants MB8_STOCK_FULL_BLOCKS/MB8_STOCK_SCAN_MS in
-mb8_storage.h and STOCK_CANDIDATE_LIMIT in temporary tests allow bounded tuning.
+Plain flash runs a TEMPORARY metadata-only census after three RAW repeats pass.
+It NEVER mounts/adopts the stock partition, changes our OOB4 YAFFS profile,
+enables writes or mistakes package asset names for watch files. One closed RO
+raw session checks strict ID, factory bad markers and on-die ECC. Schedule is
+now SEQUENTIAL physical pages0..65535, not the previous sparse5056-page survey.
+MB8_STOCK_SCAN_FIRST_PAGE in mb8_storage.h can resume at the EXACT next-page
+printed by a prior run (default0); this is a physical census range, not a
+filesystem partition. Coverage first-page/next-page/pages/skipped-bad-pages is
+printed. requested-range-complete means the requested suffix was covered,
+including factory-bad skips, NOT a proven live file tree or whole-chip coverage
+when first-page is nonzero. Time budget30,000ms is checked BETWEEN operations,
+including preemption/logging/yields, with128candidate cap; bounded in-flight
+operations/cleanup can add overhead. Progress every1024 main pages, yields every
+16 main pages and after bad-block skips; no recursion/heap growth. ECC/bus/
+comparison/cleanup failure stops all later filesystem checks and preserves first
+primary plus cleanup evidence. No program/erase/mark/unlock/format is allowed.
 
-Output CANDIDATE_HEADER requires plausible sequence, header chunk0 or valid
-extra-header flags, object/type/parent/count consistency, bounded byte-name and
-size sanity. Names escape controls/quotes/backslashes with explicit continuation
-lines; no symlinks followed. Page FNV32 is a diagnostic fingerprint, NOT an
-additional verified on-flash checksum (the legacy header checksum is unused).
-Unsupported encodings/large sparse files/custom layouts can be omitted. Even
-plausible headers MAY BE OLD/DELETED/shadowed/unlinked; no latest-object recovery
-is attempted. Always labelled INCOMPLETE: partial candidate inventory, NOT a
-current/live tree, guaranteed filenames, allocation/free-space or recovered data.
-No candidates does NOT imply empty NAND. ECC/bus/cleanup failure stops later
-filesystem checks immediately and preserves primary + cleanup evidence. Existing
-PARTITION/YAFFS_PROVISIONED/WRITE guards remain unchanged. Tests=0 excludes this
-temporary survey and its2048B buffer; permanent startup capacity report remains.
+Independent sample cross-check: quad6B/DMA full2048-byte reads at configured
+quad-data target (48MHz default) compared byte-for-byte with serial03/x1/12MHz
+reads on physical pages0,1,65535 plus up to4 nonempty census pages. Both paths
+load row13 and check ECC. Factory-bad reference pages are explicitly skipped;
+reference agreement count reports only compared samples, NOT global data
+authentication or known-good contents. Default quad path remains unchanged.
+TEMP helper is read-only-only, never mutates bus.data_width, clears QE, or
+changes the configured quad target. Serial03 uses8 separate256-byte cache
+reads: opcode03 +two column bytes +eight dummy clocks +D1 data (rev07 Table1.3,
+Figure3.6). PIO3-byte address=column<<8 emits column2+dummy0 on x1, without
+additional TURN clocks; DEVICE+PIOMIXED restore SEPIO, WP/HOLD HIGH and12MHz.
+Before next quad DMA the existing idle/mux/mode logic releases GPIO IO2/3 and
+restores quad2-byte address/48MHz. No extra B0 changes for this diagnostic.
+HAL note: caller2000us limits CMD-complete wait; actual vendor FIFO waits use
+10000us PER word. Thus2ms is NOT a whole-PIO-call guarantee. Burst sizes and
+first-error-stop bound work; do not interpret30s as a hard real-time deadline.
+First mismatch records physical page, byte offset and FNV32 fingerprints, never
+differing payload bytes. IOM/x1 backend explicitly skips independent quad
+comparison; its read-only census remains available without false agreement.
+
+Census counts all-FF, all-zero, nonempty, plausible tail sequence and header
+encoding shape. all-FF/zero is only a byte pattern, NOT proof of physical erase,
+free space or empty filesystem. Nonempty parser rejection counts distinguish
+sequence, data-chunk/flags, type, parent, object, name and size/count. At most8
+UNVALIDATED metadata-word samples print only fixed tail16 bytes as four numeric
+words and type/parent words at header offsets0/4; no arbitrary file payload,
+byte dumps or unvalidated names. Word interpretations are NOT asserted valid.
+
+CANDIDATE_HEADER retains strict sequence/header/extraflags/object/type/parent/
+count/name/size checks. Names escape controls/quotes/backslashes with explicit
+continuations; no symlinks followed. Fingerprints are NOT on-flash checksums
+(the legacy header checksum is unused). Unsupported encodings, sparse files
+larger than chip capacity or custom layouts can be omitted. Candidates MAY BE
+OLD/DELETED/shadowed/unlinked; no newest-object/deletion resolver is attempted.
+Always INCOMPLETE forensic inventory, even when requested physical range is
+complete: NOT a current/live tree, guaranteed names, allocation/free-space or
+recovered data. Zero candidates does NOT imply empty NAND or authentic reads.
+Existing PARTITION/YAFFS_PROVISIONED/WRITE guards remain unchanged. Tests=0
+excludes census, x1 helper/opcode and both2048B temporary buffers; permanent
+startup capacity report remains. Additional static test RAM4096B plus bounded
+worker-stack metadata/name workspace; nested logger retains its512B bound.
+
+Further exact stock-code corroboration (same package/hash/image2 above):
+0x84476 packer stores seq@0,obj@4,chunk@8,count@12;0x84498 ORs HEADER80000000,
+0x844a2/0x844ae shrink40000000/shadows20000000;0x844b4 clears object upper4 and
+0x844be ORs type<<28.0x844de hardlink equivalent-id/0x844e4 file-size count.
+Unpacker0x84506..0x8458c reverses the same layout/masks. These support current
+parser, not a format relaxation because sparse survey found no candidates.
+Scoped read path0x705b4->0x6d218->0x70ed4 receives original page and requests
+2048-byte DMA; returned buffer copy0x63df8 is a byte-copy loop. No software
+post-transform was seen in THAT path. This does NOT prove hardware scrambling
+off, every initialization variant, or watch firmware matching the mirrored
+version. No active Xiaomi clock/resistor/partition-write claim is added.

@@ -414,86 +414,167 @@ int mb8_storage_raw_read_pair(uint32_t physical_page, void *first, void *second,
     return r;
 }
 
+static uint32_t raw_fingerprint(const uint8_t *data)
+{
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < DS35_PAGE; i++)
+        hash = (hash ^ data[i]) * 16777619u;
+    return hash;
+}
+
+static int raw_reference(
+    uint32_t page, const uint8_t *quad, uint8_t *serial, struct mb8_stock_scan *summary)
+{
+    raw_diagnostic.page  = page;
+    raw_diagnostic.phase = "inventory-serial03-reference";
+    int r                = ds35_read_x1_reference(&nand, page, serial, DS35_PAGE);
+    if (r < 0)
+        return r;
+    for (uint32_t offset = 0; offset < DS35_PAGE; offset++)
+    {
+        if (quad[offset] == serial[offset])
+            continue;
+        summary->mismatch           = true;
+        summary->mismatch_page      = page;
+        summary->mismatch_offset    = offset;
+        summary->quad_fingerprint   = raw_fingerprint(quad);
+        summary->serial_fingerprint = raw_fingerprint(serial);
+        raw_diagnostic.phase        = "inventory-serial-quad-disagreement";
+        nand.operation.phase        = raw_diagnostic.phase;
+        nand.operation.page         = page;
+        nand.operation.result       = DS35_IO;
+        scan_error = true; /* Data not trusted. Still attempt clean feature restoration. */
+        return DS35_IO;
+    }
+    summary->reference_agree++;
+    return DS35_OK;
+}
+
 int mb8_storage_raw_inventory(
     mb8_stock_page_visitor visitor, void *context, struct mb8_stock_scan *summary)
 {
-    _Static_assert(MB8_STOCK_FULL_BLOCKS > 0 && MB8_STOCK_FULL_BLOCKS <= DS35_BLOCKS,
-        "Stock survey coverage out of chip bounds");
-    static uint8_t main_data[DS35_PAGE]; /* Worker-owned; never user payload output. */
+    _Static_assert(MB8_STOCK_SCAN_FIRST_PAGE < DS35_BLOCKS * DS35_PAGES_PER_BLOCK,
+        "Stock census resume page outside chip");
+    static uint8_t main_data[DS35_PAGE], serial_data[DS35_PAGE];
     if (!summary)
         return DS35_EINVAL;
     memset(summary, 0, sizeof(*summary));
+    summary->first_page = summary->next_page = MB8_STOCK_SCAN_FIRST_PAGE;
     if (!claim_worker() || dev.is_mounted || !visitor)
         return DS35_EINVAL;
     if ((raw_diagnostic.primary_result < 0 && raw_diagnostic.primary_result != DS35_BAD) ||
         raw_diagnostic.shutdown_result < 0 || raw_diagnostic.bus_result < 0)
-        return DS35_NOT_READY; /* Preserve the preceding first-failure evidence. */
+        return DS35_NOT_READY;
     raw_diagnostic = (struct mb8_storage_raw_diagnostic){.phase = "inventory-bus-open"};
     struct ds35_bus bus;
-    int r = mb8_nand_bus_open(&bus);
+    int             r = mb8_nand_bus_open(&bus);
     if (r < 0)
     {
         raw_diagnostic.primary_result = r;
-        raw_diagnostic.bus_result = mb8_nand_bus_diagnostic()->result;
-        status_text = "RAW inventory bus open failed; no later filesystem checks";
+        raw_diagnostic.bus_result     = mb8_nand_bus_diagnostic()->result;
+        status_text                   = "RAW census bus open failed; no later filesystem checks";
         return r;
     }
-    /* Whole-chip physical READ permission for this bounded survey only. It is
-     * NOT a claimed filesystem partition, and writable remains false. */
+    /* Explicit whole-chip READ permission for diagnostics, not a partition or
+     * filesystem profile. Neither this code nor reference reads authorize writes. */
     raw_diagnostic.phase = "inventory-probe";
     mb8_nand_diag_probe_started();
-    r = ds35_probe(&nand, &bus, 0, DS35_BLOCKS);
-    TickType_t started = xTaskGetTickCount();
-    for (uint32_t block = 0; r >= 0 && block < DS35_BLOCKS; block++)
+    r                            = ds35_probe(&nand, &bus, 0, DS35_BLOCKS);
+    TickType_t started           = xTaskGetTickCount();
+    summary->reference_available = bus.data_width == 4;
+    const uint32_t references[]  = {0, 1, DS35_BLOCKS * DS35_PAGES_PER_BLOCK - 1};
+    for (unsigned i = 0; r >= 0 && summary->reference_available && i < 3; i++)
     {
         if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(MB8_STOCK_SCAN_MS))
         {
             summary->time_limited = true;
             break;
         }
-        raw_diagnostic.page = block * DS35_PAGES_PER_BLOCK;
-        raw_diagnostic.phase = "inventory-bad-block-markers";
-        r = ds35_check_bad(&nand, block);
+        raw_diagnostic.page  = references[i];
+        raw_diagnostic.phase = "inventory-reference-bad-markers";
+        r                    = ds35_check_bad(&nand, references[i] / DS35_PAGES_PER_BLOCK);
         if (r == DS35_BAD)
         {
-            summary->bad_blocks++;
+            summary->reference_bad++;
             r = DS35_OK;
-            vTaskDelay(1);
             continue;
         }
-        uint32_t count = block < MB8_STOCK_FULL_BLOCKS ? DS35_PAGES_PER_BLOCK : 1u;
-        for (uint32_t offset = 0; r >= 0 && offset < count; offset++)
+        if (r >= 0)
         {
-            if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(MB8_STOCK_SCAN_MS))
+            raw_diagnostic.phase = "inventory-reference-quad2048";
+            r                    = ds35_read(&nand, references[i], main_data, DS35_PAGE, NULL, 0);
+        }
+        if (r >= 0)
+            r = raw_reference(references[i], main_data, serial_data, summary);
+        vTaskDelay(1);
+    }
+    unsigned extra_references = 0;
+    uint32_t checked_block    = DS35_BLOCKS;
+    while (r >= 0 && summary->next_page < DS35_BLOCKS * DS35_PAGES_PER_BLOCK)
+    {
+        if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(MB8_STOCK_SCAN_MS))
+        {
+            summary->time_limited = true;
+            break;
+        }
+        uint32_t page = summary->next_page, block = page / DS35_PAGES_PER_BLOCK;
+        raw_diagnostic.page = page;
+        if (block != checked_block)
+        {
+            raw_diagnostic.phase = "inventory-bad-block-markers";
+            r                    = ds35_check_bad(&nand, block);
+            if (r == DS35_BAD)
             {
-                summary->time_limited = true;
-                break;
+                summary->bad_blocks++;
+                summary->next_page = (block + 1) * DS35_PAGES_PER_BLOCK;
+                summary->bad_pages += summary->next_page - page;
+                r = DS35_OK;
+                vTaskDelay(1);
+                continue;
             }
-            uint32_t page = block * DS35_PAGES_PER_BLOCK + offset;
-            raw_diagnostic.page = page;
-            raw_diagnostic.phase = "inventory-ECC-main-read";
-            r = ds35_read(&nand, page, main_data, sizeof(main_data), NULL, 0);
             if (r < 0)
                 break;
-            summary->pages++;
-            summary->corrected_pages += r == DS35_CORRECTED;
-            if (!visitor(page, main_data, context))
-            {
-                summary->visitor_stopped = true;
-                break;
-            }
-            if ((summary->pages & 15u) == 0)
-                vTaskDelay(1); /* Rendering always has priority over this survey. */
+            checked_block = block;
         }
-        if (summary->visitor_stopped || summary->time_limited)
+        raw_diagnostic.phase = "inventory-ECC-main-read";
+        r                    = ds35_read(&nand, page, main_data, sizeof(main_data), NULL, 0);
+        if (r < 0)
             break;
+        summary->corrected_pages += r == DS35_CORRECTED;
+        /* Cross-check up to4 nonempty census pages beyond the3 preflight pages.
+         * No comparison of the two buffers is printed as payload. */
+        if (summary->reference_available && extra_references < 4 && page > 1 && page != 65535)
+        {
+            bool erased = true, zero = true;
+            for (size_t i = 0; i < DS35_PAGE; i++)
+            {
+                erased &= main_data[i] == 0xff;
+                zero &= main_data[i] == 0;
+            }
+            if (!erased && !zero)
+            {
+                r = raw_reference(page, main_data, serial_data, summary);
+                if (r < 0)
+                    break;
+                extra_references++;
+            }
+        }
+        summary->pages++;
+        summary->next_page = page + 1;
+        if (!visitor(page, main_data, context))
+        {
+            summary->visitor_stopped = true;
+            break;
+        }
+        if ((summary->pages & 15u) == 0)
+            vTaskDelay(1);
     }
-    raw_diagnostic.primary_result = r;
+    raw_diagnostic.primary_result  = r;
     raw_diagnostic.shutdown_result = ds35_shutdown(&nand);
     mb8_nand_bus_close();
     raw_diagnostic.bus_result = mb8_nand_bus_diagnostic()->result;
     if (r < 0 || raw_diagnostic.shutdown_result < 0 || raw_diagnostic.bus_result < 0)
-        status_text = "RAW inventory operation/cleanup failed; no later filesystem checks";
+        status_text = "RAW census/reference operation/cleanup failed; no later filesystem checks";
     if (r < 0)
         return r;
     if (raw_diagnostic.shutdown_result < 0)
