@@ -244,7 +244,7 @@ static void startup_worker(void *unused)
     else
     {
 #if WATCH_NAND_STARTUP_TESTS
-        if (!mb8_storage_startup_raw_tests())
+        if (!mb8_storage_startup_raw_tests() || !mb8_storage_startup_stock_inventory())
         {
             report();
             goto startup_done;

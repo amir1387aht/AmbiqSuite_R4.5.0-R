@@ -413,6 +413,96 @@ int mb8_storage_raw_read_pair(uint32_t physical_page, void *first, void *second,
         return raw_diagnostic.bus_result;
     return r;
 }
+
+int mb8_storage_raw_inventory(
+    mb8_stock_page_visitor visitor, void *context, struct mb8_stock_scan *summary)
+{
+    _Static_assert(MB8_STOCK_FULL_BLOCKS > 0 && MB8_STOCK_FULL_BLOCKS <= DS35_BLOCKS,
+        "Stock survey coverage out of chip bounds");
+    static uint8_t main_data[DS35_PAGE]; /* Worker-owned; never user payload output. */
+    if (!summary)
+        return DS35_EINVAL;
+    memset(summary, 0, sizeof(*summary));
+    if (!claim_worker() || dev.is_mounted || !visitor)
+        return DS35_EINVAL;
+    if ((raw_diagnostic.primary_result < 0 && raw_diagnostic.primary_result != DS35_BAD) ||
+        raw_diagnostic.shutdown_result < 0 || raw_diagnostic.bus_result < 0)
+        return DS35_NOT_READY; /* Preserve the preceding first-failure evidence. */
+    raw_diagnostic = (struct mb8_storage_raw_diagnostic){.phase = "inventory-bus-open"};
+    struct ds35_bus bus;
+    int r = mb8_nand_bus_open(&bus);
+    if (r < 0)
+    {
+        raw_diagnostic.primary_result = r;
+        raw_diagnostic.bus_result = mb8_nand_bus_diagnostic()->result;
+        status_text = "RAW inventory bus open failed; no later filesystem checks";
+        return r;
+    }
+    /* Whole-chip physical READ permission for this bounded survey only. It is
+     * NOT a claimed filesystem partition, and writable remains false. */
+    raw_diagnostic.phase = "inventory-probe";
+    mb8_nand_diag_probe_started();
+    r = ds35_probe(&nand, &bus, 0, DS35_BLOCKS);
+    TickType_t started = xTaskGetTickCount();
+    for (uint32_t block = 0; r >= 0 && block < DS35_BLOCKS; block++)
+    {
+        if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(MB8_STOCK_SCAN_MS))
+        {
+            summary->time_limited = true;
+            break;
+        }
+        raw_diagnostic.page = block * DS35_PAGES_PER_BLOCK;
+        raw_diagnostic.phase = "inventory-bad-block-markers";
+        r = ds35_check_bad(&nand, block);
+        if (r == DS35_BAD)
+        {
+            summary->bad_blocks++;
+            r = DS35_OK;
+            vTaskDelay(1);
+            continue;
+        }
+        uint32_t count = block < MB8_STOCK_FULL_BLOCKS ? DS35_PAGES_PER_BLOCK : 1u;
+        for (uint32_t offset = 0; r >= 0 && offset < count; offset++)
+        {
+            if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(MB8_STOCK_SCAN_MS))
+            {
+                summary->time_limited = true;
+                break;
+            }
+            uint32_t page = block * DS35_PAGES_PER_BLOCK + offset;
+            raw_diagnostic.page = page;
+            raw_diagnostic.phase = "inventory-ECC-main-read";
+            r = ds35_read(&nand, page, main_data, sizeof(main_data), NULL, 0);
+            if (r < 0)
+                break;
+            summary->pages++;
+            summary->corrected_pages += r == DS35_CORRECTED;
+            if (!visitor(page, main_data, context))
+            {
+                summary->visitor_stopped = true;
+                break;
+            }
+            if ((summary->pages & 15u) == 0)
+                vTaskDelay(1); /* Rendering always has priority over this survey. */
+        }
+        if (summary->visitor_stopped || summary->time_limited)
+            break;
+    }
+    raw_diagnostic.primary_result = r;
+    raw_diagnostic.shutdown_result = ds35_shutdown(&nand);
+    mb8_nand_bus_close();
+    raw_diagnostic.bus_result = mb8_nand_bus_diagnostic()->result;
+    if (r < 0 || raw_diagnostic.shutdown_result < 0 || raw_diagnostic.bus_result < 0)
+        status_text = "RAW inventory operation/cleanup failed; no later filesystem checks";
+    if (r < 0)
+        return r;
+    if (raw_diagnostic.shutdown_result < 0)
+        return raw_diagnostic.shutdown_result;
+    if (raw_diagnostic.bus_result < 0)
+        return raw_diagnostic.bus_result;
+    return DS35_OK;
+}
+
 #endif
 
 int mb8_storage_mount(bool read_only)

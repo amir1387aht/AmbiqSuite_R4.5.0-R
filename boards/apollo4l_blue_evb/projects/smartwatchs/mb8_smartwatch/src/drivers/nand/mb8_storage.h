@@ -47,6 +47,19 @@ void mb8_storage_report_diagnostics(void);
 /* Explicit RAW diagnostic only: <=256B twice, closed read-only transaction.
  * Does NOT infer a filesystem partition or alter the ID-only empty-range API. */
 int mb8_storage_raw_read_pair(uint32_t physical_page, void *, void *, size_t);
+/* TEMPORARY forensic survey, not a filesystem partition/mount. One closed RO
+ * session, explicit coverage: first64 whole blocks then page0 of the rest.
+ * A false visitor return stops normally (candidate/output budget). */
+#define MB8_STOCK_FULL_BLOCKS 64u
+#define MB8_STOCK_SCAN_MS     15000u
+struct mb8_stock_scan
+{
+    uint32_t pages, bad_blocks, corrected_pages;
+    bool time_limited, visitor_stopped;
+};
+typedef bool (*mb8_stock_page_visitor)(uint32_t page, const uint8_t *main_data, void *);
+int mb8_storage_raw_inventory(mb8_stock_page_visitor, void *, struct mb8_stock_scan *);
+
 #endif
 /* Diagnostics only: mounted partition-relative page, bounded <=2048B read. */
 int         mb8_storage_read_sample(uint32_t relative_page, void *, size_t);

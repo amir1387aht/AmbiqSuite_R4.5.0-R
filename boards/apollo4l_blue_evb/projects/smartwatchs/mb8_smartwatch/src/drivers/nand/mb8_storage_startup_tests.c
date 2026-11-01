@@ -5,6 +5,7 @@
 #include "mb8_storage_startup_tests.h"
 #include "mb8_storage.h"
 #include "yaffsfs.h"
+#include "yaffs_guts.h"
 #include "yaffs_osglue.h"
 #include "mb8_nand_board.h"
 #include "ds35m1gb.h"
@@ -45,7 +46,8 @@ static struct tree_frame tree_frames[TREE_MAX_DEPTH + 1];
 static char              tree_path[TREE_PATH_BYTES];
 static char              tree_name[4 * 256 + 1];
 
-static void tree_print_name(const char *name, unsigned depth, const char *kind, long long size)
+static void tree_print_name(
+    const char *prefix, const char *name, unsigned depth, const char *kind, long long size)
 {
     static const char hex[] = "0123456789ABCDEF";
     size_t            n     = 0;
@@ -77,7 +79,8 @@ static void tree_print_name(const char *name, unsigned depth, const char *kind, 
         size_t part = n - offset;
         if (part > 240)
             part = 240;
-        mb8_storage_log("[NAND tree] %*s%s \"%.*s\"%s\r\n",
+        mb8_storage_log("%s %*s%s \"%.*s\"%s\r\n",
+            prefix,
             (int)(depth * 2),
             "",
             offset ? "    name continued:" : "+--",
@@ -86,7 +89,156 @@ static void tree_print_name(const char *name, unsigned depth, const char *kind, 
             offset + part < n ? " [continued]" : "");
         offset += part;
     } while (offset < n);
-    mb8_storage_log("[NAND tree] %*s    %s size=%lld bytes\r\n", (int)(depth * 2), "", kind, size);
+    mb8_storage_log("%s %*s    %s size=%lld bytes\r\n", prefix, (int)(depth * 2), "", kind, size);
+}
+
+/* TEMPORARY stock in-band forensic inventory. This is deliberately NOT a
+ * YAFFS mount, current-object resolver, or filesystem usage calculation.
+ * Stock2.3.14 code subtracts16 from2048; upstream packedtags2 defines the tail.
+ * Read bytewise: raw pages need not satisfy a host struct's alignment/endian.
+ */
+#define STOCK_CANDIDATE_LIMIT 128u
+#define STOCK_ID_MASK         0x0fffffffu
+_Static_assert(sizeof(struct yaffs_obj_hdr) == 512 &&
+    offsetof(struct yaffs_obj_hdr, name) == 10 &&
+    offsetof(struct yaffs_obj_hdr, file_size_low) == 292 &&
+    offsetof(struct yaffs_obj_hdr, file_size_high) == 496, "YAFFS header layout changed");
+
+struct stock_header
+{
+    uint32_t sequence, object, parent, type;
+    uint64_t size;
+    bool extra, shrink, shadows;
+    char name[256];
+};
+
+static uint32_t stock_u32(const unsigned char *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 |
+           (uint32_t)p[3] << 24;
+}
+
+static bool stock_header_decode(const unsigned char *page, size_t bytes, struct stock_header *h)
+{
+    if (!page || !h || bytes != 2048)
+        return false;
+    const unsigned char *tags = page + 2032;
+    uint32_t seq = stock_u32(tags), object = stock_u32(tags + 4);
+    uint32_t chunk = stock_u32(tags + 8), count = stock_u32(tags + 12);
+    uint32_t type = stock_u32(page), parent = stock_u32(page + 4);
+    bool extra = (chunk & 0x80000000u) != 0;
+    if (seq < YAFFS_LOWEST_SEQUENCE_NUMBER || seq >= YAFFS_HIGHEST_SEQUENCE_NUMBER ||
+        type < 1 || type > 5 || !parent || parent > STOCK_ID_MASK ||
+        (!extra && (chunk != 0 || count != 0)) || (extra && (chunk & 0x10000000u)))
+        return false;
+    if (extra)
+    {
+        if ((object >> 28) != type || (chunk & STOCK_ID_MASK) != parent)
+            return false;
+        object &= STOCK_ID_MASK;
+    }
+    if (!object || object > STOCK_ID_MASK || object == YAFFS_OBJECTID_SUMMARY ||
+        object == YAFFS_OBJECTID_CHECKPOINT_DATA || (object == parent && object != 1))
+        return false;
+    size_t length = 0;
+    while (length < 256 && page[10 + length])
+    {
+        if (page[10 + length] == '/')
+            return false;
+        length++;
+    }
+    if (length == 256 || (!length && object != YAFFS_OBJECTID_ROOT) ||
+        (length == 1 && page[10] == '.') ||
+        (length == 2 && page[10] == '.' && page[11] == '.'))
+        return false;
+    /* This diagnostic recognizes the byte-name YAFFS layout, not arbitrary
+     * UTF16/custom encodings. Root alone may have an empty name. */
+    uint32_t high = stock_u32(page + 496), low = stock_u32(page + 292);
+    uint64_t size = (uint64_t)(high == UINT32_MAX ? 0 : high) << 32 | low;
+    if (type == 1 && (size > (uint64_t)DS35_PAGE * DS35_PAGES_PER_BLOCK * DS35_BLOCKS ||
+                     (extra && count != size)))
+        return false;
+    if (type == 4 && (!stock_u32(page + 296) || stock_u32(page + 296) > STOCK_ID_MASK ||
+                     (extra && count != stock_u32(page + 296))))
+        return false;
+    if (extra && type != 1 && type != 4 && count != 0)
+        return false;
+    memset(h, 0, sizeof(*h));
+    h->sequence = seq;
+    h->object = object;
+    h->parent = parent;
+    h->type = type;
+    h->size = type == 1 ? size : 0;
+    h->extra = extra;
+    h->shrink = stock_u32(page + 492) == 1 || stock_u32(page + 508) == 1 ||
+                (extra && (chunk & 0x40000000u));
+    h->shadows = stock_u32(page + 488) != 0 || stock_u32(page + 504) != 0 ||
+                 (extra && (chunk & 0x20000000u));
+    memcpy(h->name, page + 10, length);
+    return true;
+}
+
+struct stock_inventory
+{
+    unsigned pages, candidates;
+};
+
+static bool stock_inventory_page(uint32_t page, const uint8_t *data, void *context)
+{
+    struct stock_inventory *inventory = context;
+    struct stock_header header;
+    inventory->pages++;
+    if ((inventory->pages & 255u) == 0)
+        mb8_storage_log("[NAND stock] progress pages=%u physical-page=%u\r\n",
+            inventory->pages, (unsigned)page);
+    if (!stock_header_decode(data, DS35_PAGE, &header))
+        return true;
+    inventory->candidates++;
+    mb8_storage_log(
+        "[NAND stock] CANDIDATE_HEADER page=%u seq=%08x id=%u parent=%u type=%u "
+        "size=%llu extra=%u shrink=%u shadows=%u page-fnv32=%08x\r\n",
+        (unsigned)page, (unsigned)header.sequence, (unsigned)header.object,
+        (unsigned)header.parent, (unsigned)header.type, (unsigned long long)header.size,
+        (unsigned)header.extra, (unsigned)header.shrink, (unsigned)header.shadows,
+        (unsigned)checksum(data, DS35_PAGE));
+    /* Shared bounded escaping, but a distinct stock prefix: no inferred paths. */
+    tree_print_name("[NAND stock]", header.name, 0, "CANDIDATE name only; NOT live path", (long long)header.size);
+    return inventory->candidates < STOCK_CANDIDATE_LIMIT;
+}
+
+bool mb8_storage_startup_stock_inventory(void)
+{
+    struct stock_inventory inventory = {0};
+    struct mb8_stock_scan summary = {0};
+    mb8_storage_log(
+        "[NAND stock] TEMP RO CANDIDATE_HEADER survey; may include OLD/DELETED headers. "
+        "NOT a mounted/live tree; no contents/used/free inference.\r\n");
+    mb8_storage_log(
+        "[NAND stock] coverage: blocks0..%u ALL64 pages; blocks%u..1023 page0 ONLY; "
+        "max%u main-page reads, cap%u candidates, time%ums; "
+        "inband2032+16 byte-name layout\r\n",
+        MB8_STOCK_FULL_BLOCKS - 1u, MB8_STOCK_FULL_BLOCKS,
+        MB8_STOCK_FULL_BLOCKS * DS35_PAGES_PER_BLOCK + DS35_BLOCKS - MB8_STOCK_FULL_BLOCKS,
+        STOCK_CANDIDATE_LIMIT, MB8_STOCK_SCAN_MS);
+    int r = mb8_storage_raw_inventory(stock_inventory_page, &inventory, &summary);
+    mb8_storage_log(
+        "[NAND stock] INCOMPLETE partial survey %s rc=%d pages=%u candidates=%u "
+        "bad-blocks=%u corrected-pages=%u stop=%s; omitted pages/encodings/history "
+        "prevent a current file tree\r\n",
+        r < 0 ? "FAIL" : "DONE", r, (unsigned)summary.pages, inventory.candidates,
+        (unsigned)summary.bad_blocks, (unsigned)summary.corrected_pages,
+        r < 0 ? "read/cleanup-error" : summary.time_limited ? "time-budget" :
+        summary.visitor_stopped ? "candidate-cap" : "scheduled-coverage");
+    if (r < 0)
+    {
+        const struct mb8_storage_raw_diagnostic *d = mb8_storage_raw_diagnostic();
+        mb8_storage_log("[NAND stock] phase=%s physical-page=%u primary=%d shutdown=%d bus=%d\r\n",
+            d->phase ? d->phase : "unavailable", (unsigned)d->page, d->primary_result,
+            d->shutdown_result, d->bus_result);
+        mb8_storage_report_diagnostics();
+        mb8_storage_log("[NAND stock] remaining filesystem checks SKIP after inventory fault\r\n");
+    }
+    return r >= 0;
 }
 
 static void repeat_file_read(const char *path)
@@ -210,7 +362,7 @@ static void file_read_test(void)
         size_t parent_length = tree_frames[depth].path_length;
         if (parent_length + 1 + length >= sizeof(tree_path))
         {
-            tree_print_name(e->d_name, depth, "UNINSPECTED (path limit)", -1);
+            tree_print_name("[NAND tree]", e->d_name, depth, "UNINSPECTED (path limit)", -1);
             mb8_storage_log("[NAND tree] INCOMPLETE: path limit=%u bytes; subtree skipped\r\n",
                 TREE_PATH_BYTES);
             complete = false;
@@ -220,7 +372,7 @@ static void file_read_test(void)
         memcpy(tree_path + parent_length + 1, e->d_name, length + 1);
         if (yaffs_lstat(tree_path, &st) < 0)
         {
-            tree_print_name(e->d_name, depth, "UNINSPECTED (lstat failed)", -1);
+            tree_print_name("[NAND tree]", e->d_name, depth, "UNINSPECTED (lstat failed)", -1);
             mb8_storage_log("[NAND tree] INCOMPLETE: lstat errno=%d\r\n", yaffs_get_error());
             tree_path[parent_length] = 0;
             complete                 = false;
@@ -231,7 +383,7 @@ static void file_read_test(void)
                                 : S_ISLNK(st.st_mode) ? "symlink (not followed)"
                                 : S_ISREG(st.st_mode) ? "file"
                                                       : "special (not opened)";
-        tree_print_name(e->d_name, depth, kind, (long long)st.st_size);
+        tree_print_name("[NAND tree]", e->d_name, depth, kind, (long long)st.st_size);
         if (!tested && S_ISREG(st.st_mode) && st.st_size > 0)
         {
             tested = true;

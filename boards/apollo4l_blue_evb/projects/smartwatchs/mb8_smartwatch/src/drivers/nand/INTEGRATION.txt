@@ -314,3 +314,58 @@ Host adapters replace ONLY MCU-address policy with host pointers and RTOS/HAL
 with mocks. Firmware builds use actual ARM GCC14.2.1/vendor libraries, no stubs:
 stockquad, IOMfallback, disabled, report-only/testsOFF, explicitwrite profiles.
 Tests/harnesses/firmwareanalysis/buildoutputs remain OUTSIDE git; no extra.md.
+
+STOCK2.3.14 IN-BAND CONFIGURATION / TEMPORARY CANDIDATE INVENTORY
+Offline analysis reverified the exact50,288,837B SHA256 above. Container has20
+0x90-byte descriptors at0x9c+i*0x90, payload start0x1000; each descriptor's
+stored/raw length at+0/+4 and CRC32 at+0x8c was checked. All20 payload CRC32s
+match. CRCs are corruption checks, NOT vendor authentication; the524B trailer
+beyond summed payload was not authenticated. No blob/code is executed/committed.
+Image2 is package0x464f4 length0xe3550, mapped for analysis at0x5e000 (vector
+and internal literal pointers agree). YAFFS parameter prefix at package0xd75fc
+(runtime0xef108) points to name "yaffs2_mount" at0xef0f8. Its fields match
+upstream struct yaffs_param: inband_tags=1,total_bytes_per_chunk=2048,
+chunks_per_block=64,spare_bytes_per_chunk=64,start_block=0,end_block=1023,
+n_reserved_blocks=8,n_caches=5,use_nand_ecc=1,no_tags_ecc=1,is_yaffs2=1.
+Same prefix repeats at package0x428f4/runtime0x598f4 (image1 base0x18000)
+and0x23e860/runtime0x172e1c (image3 base0x5e000).
+Actual image2 instructions, not strings alone: init0x7c0fc loads table0xef108
+(literal pool0x7c128) into constructor0x7c56c. Constructor bounded-copies128B
+via0x89d62, installs NAND callbacks0x7c500..0x7c560 and registers at0x89764.
+At0x82962 it loads total main bytes from[dev+8];0x82964 subtracts16 on in-band
+branch;0x82966 stores data_bytes_per_chunk at[dev+0xc0]. Thus2032payload+16tags.
+Read callback0x7c51c->0x705b4 rejects nonzero spare pointer/count and forwards
+main read to0x6d218; write equivalent0x7c500->0x7058c->0x6d1b0. This confirms
+in-band configuration/driver path, not an on-watch live object map or evidence
+that no later code modifies parameters. No active clock/resistor claim added.
+Upstream format references (pinned YAFFS commit recorded above):
+https://github.com/Aleph-One-Ltd/yaffs2/blob/474b3acb927d27b2305618aaf24456b9d33fe91b/core/yaffs_tagsmarshall.c
+https://github.com/Aleph-One-Ltd/yaffs2/blob/474b3acb927d27b2305618aaf24456b9d33fe91b/core/yaffs_packedtags2.c
+
+Plain flash now runs a TEMPORARY metadata-only stock survey after three RAW
+repeats pass. This NEVER mounts/adopts the stock partition, changes our own OOB4
+YAFFS profile, enables writes or interprets package asset names as watch files.
+One closed strictly RO raw session checks strict ID, factory bad markers and
+on-die ECC. Explicit schedule: ALL64 pages in blocks0..63, then ONLY page0 in
+blocks64..1023: max5056 main reads plus at most2048 one-byte BBM reads.
+Time budget15,000ms (including preemption/logging/yields),128candidate cap;
+cleanup still runs after stop. Each individual operation retains existing
+bounded timeouts. Worker yields at least every16 main pages and after bad-block
+skips; no recursive calls/heap growth. Temporary additional static RAM2048B;
+header/name workspace is bounded on worker stack (512B logger nested). No file
+contents are emitted. Constants MB8_STOCK_FULL_BLOCKS/MB8_STOCK_SCAN_MS in
+mb8_storage.h and STOCK_CANDIDATE_LIMIT in temporary tests allow bounded tuning.
+
+Output CANDIDATE_HEADER requires plausible sequence, header chunk0 or valid
+extra-header flags, object/type/parent/count consistency, bounded byte-name and
+size sanity. Names escape controls/quotes/backslashes with explicit continuation
+lines; no symlinks followed. Page FNV32 is a diagnostic fingerprint, NOT an
+additional verified on-flash checksum (the legacy header checksum is unused).
+Unsupported encodings/large sparse files/custom layouts can be omitted. Even
+plausible headers MAY BE OLD/DELETED/shadowed/unlinked; no latest-object recovery
+is attempted. Always labelled INCOMPLETE: partial candidate inventory, NOT a
+current/live tree, guaranteed filenames, allocation/free-space or recovered data.
+No candidates does NOT imply empty NAND. ECC/bus/cleanup failure stops later
+filesystem checks immediately and preserves primary + cleanup evidence. Existing
+PARTITION/YAFFS_PROVISIONED/WRITE guards remain unchanged. Tests=0 excludes this
+temporary survey and its2048B buffer; permanent startup capacity report remains.
