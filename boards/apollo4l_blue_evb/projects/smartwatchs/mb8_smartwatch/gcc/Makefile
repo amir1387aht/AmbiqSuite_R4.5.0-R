@@ -18,21 +18,19 @@ WATCH_NAND_FULL_FORMAT ?= 0
 ifneq ($(filter $(WATCH_NAND_FULL_FORMAT),0 1),$(WATCH_NAND_FULL_FORMAT))
 $(error WATCH_NAND_FULL_FORMAT must be 0 or 1)
 endif
+# Formatting/write-test authorization was withdrawn. Old flash commands must
+# fail before any image is built; there is deliberately no bypass flag.
 ifeq ($(WATCH_NAND_FULL_FORMAT),1)
-ifneq ($(WATCH_NAND_YAFFS2):$(WATCH_NAND_MSPI_QUAD):$(WATCH_NAND_TEST_WRITE),1:1:0)
-$(error FULL_FORMAT requires NAND=1 MSPI_QUAD=1 TEST_WRITE=0; it has its own destructive tests)
+$(error Full-format authorization withdrawn: read-only investigation only; use WATCH_NAND_FULL_FORMAT=0)
 endif
+ifeq ($(WATCH_NAND_TEST_WRITE),1)
+$(error Write-test authorization withdrawn: read-only investigation only; use WATCH_NAND_TEST_WRITE=0)
 endif
 ifneq ($(filter $(WATCH_NAND_STARTUP_TESTS),0 1),$(WATCH_NAND_STARTUP_TESTS))
 $(error WATCH_NAND_STARTUP_TESTS must be 0 or 1)
 endif
 ifneq ($(filter $(WATCH_NAND_TEST_WRITE),0 1),$(WATCH_NAND_TEST_WRITE))
 $(error WATCH_NAND_TEST_WRITE must be 0 or 1)
-endif
-ifeq ($(WATCH_NAND_TEST_WRITE),1)
-ifneq ($(WATCH_NAND_YAFFS2):$(WATCH_NAND_STARTUP_TESTS),1:1)
-$(error WATCH_NAND_TEST_WRITE requires WATCH_NAND_YAFFS2=1 WATCH_NAND_STARTUP_TESTS=1)
-endif
 endif
 ifneq ($(filter $(WATCH_NAND_MSPI_QUAD),0 1),$(WATCH_NAND_MSPI_QUAD))
 $(error WATCH_NAND_MSPI_QUAD must be 0 or 1)
@@ -93,9 +91,8 @@ SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(AMBIQ_SRC) $(NEMA_SRC) $(UTIL_SRC) $
 # Isolated NAND branch: guarded startup worker, no LVGL/display dependencies.
 ifeq ($(WATCH_NAND_YAFFS2),1)
 NAND_SRC := $(wildcard ../src/drivers/nand/*.c ../src/drivers/nand/yaffs2/*.c)
-ifeq ($(WATCH_NAND_FULL_FORMAT),0)
+# Retained for history only, never selected by a read-only investigation build.
 NAND_SRC := $(filter-out ../src/drivers/nand/mb8_storage_format.c,$(NAND_SRC))
-endif
 ifeq ($(WATCH_NAND_STARTUP_TESTS),0)
 NAND_SRC := $(filter-out ../src/drivers/nand/mb8_storage_startup_tests.c,$(NAND_SRC))
 endif

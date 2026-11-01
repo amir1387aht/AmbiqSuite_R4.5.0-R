@@ -230,18 +230,8 @@ static void startup_worker(void *unused)
     (void)unused;
     while (!watch_gpu_ready)
         vTaskDelay(pdMS_TO_TICKS(10));
-#if WATCH_NAND_FULL_FORMAT
-    mb8_storage_log(
-        "[NAND FORMAT] DESTRUCTIVE boot requested; ERASES AGAIN on every reboot. Reflash FULL_FORMAT=0 afterward.\r\n");
-    bool formatted = mb8_storage_format_boot();
-    mb8_storage_log(
-        "[NAND FORMAT] %s; %s\r\n", formatted ? "PASS" : "INCOMPLETE/FAIL", mb8_storage_status());
-    report_shutdown_failure();
-    report_bus_failure();
-    report();
-    for (;;)
-        vTaskSuspend(NULL);
-#endif
+    mb8_storage_log("[NAND] read-only investigation: full-format and write-test boot modes "
+                    "DISABLED (authorization withdrawn).\r\n");
     mb8_storage_log("[NAND] test-write request=%u (default0); actual writes also require "
                     "confirmed provisioned partition + authorization\r\n",
         (unsigned)WATCH_NAND_TEST_WRITE);

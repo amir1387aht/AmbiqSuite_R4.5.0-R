@@ -12,6 +12,14 @@
 #ifndef WATCH_NAND_FULL_FORMAT
 #define WATCH_NAND_FULL_FORMAT 0
 #endif
+#ifndef WATCH_NAND_TEST_WRITE
+#define WATCH_NAND_TEST_WRITE 0
+#endif
+/* User withdrew formatting/write-test permission. Defense in depth for manual
+ * compiler invocations that bypass Makefile validation; no override switch. */
+#if WATCH_NAND_FULL_FORMAT || WATCH_NAND_TEST_WRITE
+#error "Destructive boot authorization withdrawn; read-only investigation only"
+#endif
 #define DS35_MAX_CLOCK_HZ    83000000u
 #define DS35_PAGE            2048u
 #define DS35_OOB             128u

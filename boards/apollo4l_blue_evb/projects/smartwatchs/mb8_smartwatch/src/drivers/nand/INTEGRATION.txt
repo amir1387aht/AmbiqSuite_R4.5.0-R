@@ -1,89 +1,42 @@
 MI BAND8 STOCK PROFILE / GUARDED YAFFS2 / MSPI1-1-4
 ================================================
 Experimental software, not a validated on-watch filesystem. This isolated branch
-is NOT merged into main/display/LVGL. Ordinary builds do not format or overwrite
-assets. The explicit FULL_FORMAT boot below is destructive and user-authorized.
+is NOT merged into main/display/LVGL. Formatting and write-test authorization
+has been withdrawn. Current builds are for read-only investigation; old
+destructive commands now fail to build.
 No stock firmware binary or guessed stock-filesystem adoption is included.
 
-EXPLICIT DESTRUCTIVE FULL FORMAT / TEMPORARY TEST BOOT
-The user authorized discarding stock NAND data. From the project gcc directory:
+READ-ONLY INVESTIGATION / DESTRUCTIVE AUTHORIZATION WITHDRAWN
+The user canceled formatting before further flash/firmware investigation.
+WATCH_NAND_FULL_FORMAT=1 and WATCH_NAND_TEST_WRITE=1 are rejected by Make AND
+by C compilation in ds35m1gb.h. There is no override/re-authorization flag.
+mb8_storage_format.c remains historical/inert, unconditionally excluded from
+NAND sources; the destructive startup entry was removed. Low-level NAND program
+APIs remain dormant for the existing port, not called by default investigation.
+The canonical read-only03 framing fix remains; its watch outcome is UNVERIFIED.
+
+Safe report-only image, from gcc:
   make clean
-  ./flash.bat WATCH_NAND_FULL_FORMAT=1 WATCH_NAND_TEST_WRITE=0
-This image ERASES AGAIN ON EVERY REBOOT. After testing, reflash:
+  ./flash.bat WATCH_NAND_FULL_FORMAT=0 WATCH_NAND_STARTUP_TESTS=0 WATCH_NAND_TEST_WRITE=0
+Optional bounded NONDESTRUCTIVE raw/census tests:
   make clean
-  ./flash.bat WATCH_NAND_FULL_FORMAT=0 WATCH_NAND_TEST_WRITE=0
-No manual voltage/pin/partition/write confirmation edits are needed FOR THIS
-explicit mode. Ordinary board partition/layout/write flags remain unchanged0.
-FULL_FORMAT requires NAND=1 and MSPI_QUAD=1; IOM/disabled/conflicting TEST_WRITE
-combinations are build errors. It does not download/flash/run stock firmware.
+  ./flash.bat WATCH_NAND_FULL_FORMAT=0 WATCH_NAND_STARTUP_TESTS=1 WATCH_NAND_TEST_WRITE=0
+No physical confirmation/partition/write guards are weakened. No untrusted stock
+YAFFS mount, A0 unlock, WREN/program/erase/mark/format occurs in these defaults.
+Reset/QE/ECC protocol setup/restoration remains necessary for read-only access.
 
-Mandatory preflight BEFORE A0 unlock, WREN06, PROGRAM or ERASED8:
-- Runtime E5 A1, geometry/mux, healthy transport and ECC checks remain strict.
-- Inventory first/two-page physical factory markers in all1024 blocks; skipbad.
-- Firstgood pages0/1 and lastgood page63 each load ONE row/cache. Two complete
-  passes compare canonical x1PIO03/12MHz, quadPIO6B/12MHz and quadDMA6B/12MHz,
-  all using the same eight256B windows and8 dummy clocks. Serial pass2 must
-  also match the retained serial pass1, not overwrite its baseline.
-- Any12MHz disagreement or transport/ECC/cleanup failure blocks erasure.
-  Bounded first16 bytes of a differing window are labelled read-debug evidence;
-  neither serial nor quad is declared correct merely because it repeats.
-- Optional quadDMA48 vs canonical12 comparison is a separate diagnostic only.
-  Healthy48 data disagreement does not block proven12 consensus; a hardware/
-  ECC/policy-reset fault still stops. Subsequent format/program/mount/test data
-  ALWAYS use12MHz. Normal FULL_FORMAT=0 quad target remains48MHz.
-
-After12 consensus, unlock only the authorized session. Rev07 section3.2 says
-feature registers survive RESET. A0 Table3.1 defined maskBE is BRWD7/BP5:3/
-INV2/CMP1;6/0 are reserved. Save originalA0 once, REFUSE BRWD, RMW clear3E
-while preserving reserved bits, verify BE only. Healthy shutdown at serial12
-issues WRDI04, verifies WELclear, restores/verifies originalA0 BEFORE B0. No
-replay on poisoned transport. [NAND protection] UNRESTORED explicitly reports
-an incomplete restoration, not invented observed bytes; RESET alone is not
-claimed to restore protection. Unmount failure retains handle/ownership and
-reports cleanup NOT completed / power-cycle-recovery required, without retry.
-
-Destructive gate and coverage:
-1. Erase first factory-good scratch block, program deterministic lane/order-
-   sensitive patterns into its first2 pages (main2048 + OOB4..31), read back and
-   compare every byte, then repeat12 consensus on known patterns. Physically
-   re-read both factory markers uncached; any change stops before mass erase.
-2. Erase EVERY factory-good block0..1023, including scratch again. Factorybad
-   blocks are never erased/programmed/marked. Verify main2048 and user OOB4..63
-   on EVERY page read back as FF. This does NOT claim parity OOB64..127/raw-cell
-   erase measurement; first-page marker area is preserved, never repurposed.
-3. First unexpected program/erase/status/ECC/read/cleanup fault stops and prints
-   FORMAT INCOMPLETE with primary, exact block/page/phase/C0 and cleanup status.
-   No automatic new bad marking, retries or pretending the format succeeded.
-4. Only complete verified erase+healthy protection/B0 close grants a PRIVATE
-   THIS-BOOT runtime own OOB4 YAFFS profile, blocks0..1023, reserve5/cache4,
-   original96KiB heap/256object bound. No stock layout/flags/persistent adoption
-   marker is guessed. No heap budget expansion or application API changes.
-5. Actual YAFFS file tests exclusively create known-pattern.bin in a dedicated
-   test directory at sizes0,1,2047,2048,2049,262144 bytes (cross-block). Each
-   fsyncs/closes, warm-unmounts/remounts RO, verifies bytes+EOF from NAND, remounts
-   RW only to delete its own file/directory, syncs, then warm-remounts RO to prove
-   absence. Callback I/O failures latch and prohibit ALL later mutations/mounts;
-   upstream close/flush success cannot conceal a failed NAND callback. No unsafe
-   forced unmount. Failure can leave diagnostic files; it never cleans unrelated
-   files or retries a failed operation. Warm remount is NOT power-loss proof,
-   deletion is NOT proof of physical erasure.
-
-Progress yields after bounded page/block/chunk groups in the dedicated low-
-priority worker, after GPUready. No LVGL/UI/FPS/display/allocator changes. Rate
-lines measure only this watch's timed file API operations with explicit bytes,
-ticks/tickHz, including documented sync/close and deliberate yields; not raw
-maximum throughput or a claim of48MHz validation. Host/mock rates are NOT watch
-measurements. PASS requires all six file sizes plus all healthy cleanup checks.
-A normal subsequent image remains RO/unprovisioned until future explicit app
-filesystem configuration; successful format does NOT persist our authorization.
-This implementation needs on-watch validation; offline models/ARM linking do
-not prove the source of the earlier serial/quad disagreement or physical format.
+IMPORTANT: source changes cannot revoke an already installed e9d397d destructive
+image. Do not boot/reboot that old format image; replace it with this read-only
+image. No installed firmware is remotely disabled or flashed by this change.
+The earlier serial/quad first-byte disagreement remains unresolved on hardware;
+canonical address2+HAL TURN8 has software model evidence, NOT watch confirmation.
+Stock firmware analysis is offline and read-only, not firmware execution.
 
 CURRENT DEFAULTS AND STARTUP
 WATCH_NAND_YAFFS2=1 WATCH_NAND_MSPI_QUAD=1 WATCH_NAND_STARTUP_TESTS=1
 WATCH_NAND_TEST_WRITE=0 WATCH_NAND_FULL_FORMAT=0. Plain ./flash.bat includes
-reporting and RO tests, never format. FULL_FORMAT is independent of removable
-STARTUP_TESTS (it works with STARTUP_TESTS=0).
+reporting and RO tests, never format. FULL_FORMAT=1 and TEST_WRITE=1 are now
+hard-disabled; only RO tests may be selected.
 The user selected/confirmed STOCK MiBand8 hardware, not a custom wired board.
 Manual pinout/1.8V/part-geometry/quad-pullup/max-clock confirmation switches have
 been REMOVED. No need to edit those old flags. Profile is STOCK_MB8 with strict
@@ -350,15 +303,10 @@ To disable/remove these LATER but KEEP report:
   ./flash.bat WATCH_NAND_STARTUP_TESTS=0 WATCH_NAND_TEST_WRITE=0
 Then the temporary .c/.h can be deleted; permanent worker/report remain.
 
-Explicit OPTIONAL write/delete (defaultOFF):
-  ./flash.bat WATCH_NAND_TEST_WRITE=1
-Still requires partition/layout confirmation AND WRITES_AUTHORIZED=1. One
-exclusive unique<=1024B file (O_EXCL,<=8collision tries), deterministic pattern,
-fsync/close/warm ROremount/readback, then RWremount ONLY for cleanup of THIS file,
-absence/ENOENT +sync. Existing files never overwritten/unlinked. Failure stages
-and residual test path reported. Warm remount discards YAFFS caches; not power-cut
-proof. Logical unlink is NOT guaranteed physical erase. Initial RO message is
-preceded by test-write request flag, so it is not a whole-boot no-write promise.
+The former optional write/delete boot test is WITHDRAWN, not merely defaultOFF.
+Old TEST_WRITE=1 commands now fail to build even if board write/partition flags
+were edited locally. Its historical code is not a re-authorization mechanism.
+The startup log explicitly identifies the current read-only investigation.
 
 All operations in one worker, no ISR/LVGL/timer calls. Worker remains suspended
 alive after one-shot tests; owner TaskHandle is not deleted. Future application
