@@ -4,6 +4,7 @@
 #include "mb8_storage.h"
 #include "mb8_nand_board.h"
 #include "mb8_nand_transport.h"
+#include "ds35m1gb.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "mb8_storage_log.h"
@@ -80,8 +81,9 @@ static void report_bus_failure(void)
             (unsigned)d->hal_status,
             (unsigned)d->hal_status);
     else
-        mb8_storage_log("[NAND bus] HAL status=N/A (failure before a failed HAL call)\r\n");
-    mb8_storage_log("[NAND bus] %s; NAND JEDEC probe not started\r\n",
+        mb8_storage_log("[NAND bus] HAL status=N/A (no failed HAL call recorded)\r\n");
+    mb8_storage_log("[NAND bus] JEDEC probe %s; %s\r\n",
+        d->probe_started ? "started (runtime/shutdown failure possible)" : "not started",
         d->hardware_attempted
             ? "controller/pad initialization attempted; cleanup attempted"
             : "this open rejected in preflight; no hardware touched by this attempt");
@@ -110,6 +112,8 @@ static void report_bus_failure(void)
         (unsigned)mb8_nand_board.sck_func,
         (unsigned)mb8_nand_board.cs_pin,
         (unsigned)mb8_nand_board.cs_func);
+    mb8_storage_log(
+        "[NAND bus] last successful HAL clock=%uHz (not measured)\r\n", (unsigned)d->active_hz);
     if (d->pin_valid)
     {
         mb8_storage_log("[NAND bus] failing signal=%s GPIO=%u selector=%u\r\n",
@@ -124,6 +128,29 @@ static void report_bus_failure(void)
                 (unsigned)mb8_nand_board.mspi,
                 d->signal);
     }
+}
+
+static void report_shutdown_failure(void)
+{
+    const struct ds35_shutdown_diagnostic *d = mb8_storage_shutdown_diagnostic();
+    if (!d->attempted || d->result >= 0)
+        return;
+    mb8_storage_log(
+        "[NAND restore] phase=%s DS35=%d; reset required; no replay\r\n", d->phase, d->result);
+    if (d->expected_valid)
+        mb8_storage_log(
+            "[NAND restore] B0 saved=0x%02x expected=0x%02x; FULL-byte compare; defined-mask=0xd1\r\n",
+            (unsigned)d->saved,
+            (unsigned)d->expected);
+    else
+        mb8_storage_log("[NAND restore] B0 saved/expected unavailable\r\n");
+    if (d->observed_valid)
+        mb8_storage_log("[NAND restore] B0 observed=0x%02x xor=0x%02x defined-bit-diff=0x%02x\r\n",
+            (unsigned)d->observed,
+            (unsigned)(d->observed ^ d->expected),
+            (unsigned)((d->observed ^ d->expected) & 0xd1u));
+    else
+        mb8_storage_log("[NAND restore] B0 observed unavailable: GET did not complete\r\n");
 }
 
 static void startup_worker(void *unused)
@@ -143,10 +170,11 @@ static void startup_worker(void *unused)
     {
         mb8_storage_log("[NAND] probe SKIP/FAIL: %s\r\n", mb8_storage_status());
         report_bus_failure();
+        report_shutdown_failure();
         report();
 #if WATCH_NAND_STARTUP_TESTS
         mb8_storage_log(
-            "[NAND test] RO checks SKIP: bus initialization or runtime chip identity failed\r\n");
+            "[NAND test] RO checks SKIP: bus/probe/status/restoration failed; no further reads\r\n");
 #endif
     }
     else
@@ -158,6 +186,7 @@ static void startup_worker(void *unused)
         {
             mb8_storage_log("[NAND] RO mount SKIP/FAIL: %s\r\n", mb8_storage_status());
             report_bus_failure();
+            report_shutdown_failure();
             report();
 #if WATCH_NAND_STARTUP_TESTS
             mb8_storage_log(

@@ -61,6 +61,27 @@ say initialization/cleanup was attempted; they do not claim no hardware access.
 JEDEC starts only after a successful bus open. IOM fallback also records stages,
 but remains unconfigured (IOM=UNKNOWN); no automatic serial fallback occurs.
 
+Shutdown now selects the known12MHz serial probe clock via normal HAL
+CLOCK_CONFIG BEFORE SET/GET restoring savedB0 (including QE). Previously those
+commands still ran at the selected48MHz bulk clock, and lowering followed only
+a successful restore. This sequencing correction is conservative; the user's
+E5 A1/status-success +shutdown-failure log does NOT prove its root cause.
+48MHz data/normal-operation clock policy is otherwise unchanged.
+Table3.1 defines B0[7,6,4,0]; other bits are reserved, not documented busy/volatile
+bits. FULL-BYTE restore verification remains enforced, including reserved-only
+mismatches; no discrepancy is silently masked. No tFEAT/busy wait is specified
+for SET FEATURES; existing1us CS gap exceeds Table4.7 tCS>=100ns. No invented
+feature-program timing or undocumented command/retry is introduced.
+On failure, [NAND restore] prints phase, DS35 result, saved/expected B0 and
+observed B0 ONLY if GET completed; otherwise observed unavailable. XOR plus
+defined-bit-diff (maskD1) are diagnostic only, NOT a relaxed comparison.
+clock-down, SET-B0, GET-B0 and mismatch are distinct. Runtime HAL phase/PIO/DMA/
+clock/close failures preserve their first status before cleanup. Last successful
+HAL clock is a software configuration snapshot, not measured frequency. JEDEC
+started/not-started is tracked; shutdown errors no longer imply no probe.
+Transport/readback failure still blocks further startup reads and requires reset;
+no PROGRAM/ERASE/unlock/format or partition-guard changes accompany this fix.
+
 The reported mixed NAND/GPU UART text had a software cause: Ambiq printf formats
 into global g_prfbuf BEFORE its UART callback acquires the output mutex. Storage
 now uses private512B stack buffer + standard C vsnprintf + existing project

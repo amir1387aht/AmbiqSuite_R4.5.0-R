@@ -28,6 +28,16 @@ void mb8_nand_diag_clock(uint32_t hz)
     diagnostic.selected_hz = hz;
 }
 
+void mb8_nand_diag_active_clock(uint32_t hz)
+{
+    diagnostic.active_hz = hz;
+}
+
+void mb8_nand_diag_probe_started(void)
+{
+    diagnostic.probe_started = true;
+}
+
 int mb8_nand_diag_fail(int result, const char *stage, const char *reason)
 {
     if (diagnostic.result >= 0)

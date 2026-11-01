@@ -374,24 +374,60 @@ int ds35_shutdown(struct ds35_nand *n)
     if (!n)
         return DS35_EINVAL;
     n->writable = false;
+    /* Never overwrite the first shutdown failure with a second cleanup call. */
+    if (n->shutdown.attempted && n->shutdown.result < 0)
+        return n->shutdown.result;
+    struct ds35_shutdown_diagnostic *d = &n->shutdown;
+    *d = (struct ds35_shutdown_diagnostic){.phase = "shutdown-entry",
+        .attempted                                = true,
+        .expected_valid                           = n->feature_saved,
+        .saved                                    = n->saved_feature,
+        .expected                                 = n->saved_feature};
     if (n->fault)
-        return DS35_NOT_READY;
+    {
+        d->phase  = "shutdown-prior-transport-fault";
+        d->result = DS35_NOT_READY;
+        return d->result;
+    }
     if (n->feature_saved)
     {
-        uint8_t value;
-        int     r = set_feature(n, 0xb0, n->saved_feature);
-        if (r < 0 || (r = feature(n, 0xb0, &value)) < 0 || value != n->saved_feature)
+        int r;
+        /* Restore the known working serial probe clock BEFORE clearing QE.
+         * Previously SET/GET B0 still ran at the selected bulk clock (48MHz),
+         * and only a successful readback lowered it. This is a conservative
+         * sequencing correction, not proof of the watch's failure mechanism.
+         * Serial phase selection still happens in the transport per command.
+         */
+        d->phase = "shutdown-clock-down";
+        if (n->bus.data_width == 4 && (r = n->bus.quad_ready(n->bus.ctx, false)) < 0)
         {
-            n->fault = true;
-            return DS35_IO;
+            d->result = r;
+            n->fault  = true;
+            return r;
         }
-        if (n->bus.data_width == 4 && n->bus.quad_ready(n->bus.ctx, false) < 0)
+        d->phase = "shutdown-set-B0";
+        r        = set_feature(n, 0xb0, n->saved_feature);
+        if (r >= 0)
         {
-            n->fault = true;
-            return DS35_IO;
+            d->phase          = "shutdown-get-B0";
+            r                 = feature(n, 0xb0, &d->observed);
+            d->observed_valid = r >= 0;
+        }
+        if (r >= 0 && d->observed != d->expected)
+        {
+            d->phase = "shutdown-B0-mismatch";
+            r        = DS35_IO;
+        }
+        if (r < 0)
+        {
+            d->result = r;
+            n->fault  = true;
+            return r;
         }
         n->feature_saved = false;
     }
-    n->ready = false;
+    n->ready  = false;
+    d->phase  = "shutdown-complete";
+    d->result = DS35_OK;
     return DS35_OK;
 }

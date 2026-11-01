@@ -39,18 +39,32 @@ struct ds35_bus
     void (*delay_us)(void *, uint32_t);
     /* Data width only: all commands/addresses remain x1. */
     unsigned data_width;
-    /* Called only AFTER E5 A1 identity and QE/ECC are read-verified. */
+    /* true only AFTER E5 A1 and QE/ECC readback; false BEFORE restoring B0.
+     * false must select the known serial probe clock, and prohibit quad data;
+     * it must NOT change NAND QE or issue a command itself. */
     int (*quad_ready)(void *, bool);
+};
+
+/* Shutdown evidence is retained on failure; no fabricated observed value when
+ * SET/GET or the clock transition did not complete. Table3.1 defines B0 bits
+ * 7,6,4,0; comparison remains FULL BYTE until a real mismatch is understood. */
+struct ds35_shutdown_diagnostic
+{
+    const char *phase;
+    int         result;
+    uint8_t     saved, expected, observed;
+    bool        attempted, expected_valid, observed_valid;
 };
 
 struct ds35_nand
 {
-    struct ds35_bus bus;
-    uint32_t        first_block, block_count;
-    bool            ready, writable, fault;
-    bool            feature_saved;
-    uint8_t         saved_feature;
-    uint32_t        corrected_reads, uncorrectable_reads;
+    struct ds35_bus                 bus;
+    uint32_t                        first_block, block_count;
+    bool                            ready, writable, fault;
+    bool                            feature_saved;
+    uint8_t                         saved_feature;
+    struct ds35_shutdown_diagnostic shutdown;
+    uint32_t                        corrected_reads, uncorrectable_reads;
     /* One shared-SRAM page bounce buffer, retained until DMA completes. */
     _Alignas(32) uint8_t page[DS35_PAGE + DS35_OOB];
     uint8_t bad[(DS35_BLOCKS + 7u) / 8u];

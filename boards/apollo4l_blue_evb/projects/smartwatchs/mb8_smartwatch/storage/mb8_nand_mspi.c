@@ -46,17 +46,20 @@ void mb8_nand_mspi_close(void)
 {
     if (!mspi || poisoned)
         return;
-    if (am_hal_mspi_disable(mspi) != AM_HAL_STATUS_SUCCESS)
+    uint32_t status = am_hal_mspi_disable(mspi);
+    if (mb8_nand_diag_hal(status, "controller-close-disable") < 0)
     {
         abort_controller();
         return;
     }
-    if (am_hal_mspi_interrupt_disable(mspi, AM_HAL_MSPI_INT_ALL) != AM_HAL_STATUS_SUCCESS)
+    status = am_hal_mspi_interrupt_disable(mspi, AM_HAL_MSPI_INT_ALL);
+    if (mb8_nand_diag_hal(status, "controller-close-interrupt-disable") < 0)
     {
         abort_controller();
         return;
     }
-    if (am_hal_mspi_power_control(mspi, AM_HAL_SYSCTRL_DEEPSLEEP, false) != AM_HAL_STATUS_SUCCESS)
+    status = am_hal_mspi_power_control(mspi, AM_HAL_SYSCTRL_DEEPSLEEP, false);
+    if (mb8_nand_diag_hal(status, "controller-close-power") < 0)
     {
         /* Disable succeeded: no transfer is live. Power state is ambiguous;
          * do not access peripheral registers or release the HAL allocation. */
@@ -66,7 +69,8 @@ void mb8_nand_mspi_close(void)
             (am_hal_pwrctrl_periph_e)(AM_HAL_PWRCTRL_PERIPH_MSPI0 + mb8_nand_board.mspi));
         return;
     }
-    if (am_hal_mspi_deinitialize(mspi) != AM_HAL_STATUS_SUCCESS)
+    status = am_hal_mspi_deinitialize(mspi);
+    if (mb8_nand_diag_hal(status, "controller-close-deinitialize") < 0)
     {
         /* Already powered down; retain the handle and require firmware reset. */
         poisoned     = true;
@@ -96,8 +100,12 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
          * Calls happen only after the previous CS transaction has completed.
          */
         status = am_hal_mspi_control(mspi, AM_HAL_MSPI_REQ_DEVICE_CONFIG, &mode);
+        mb8_nand_diag_hal(status, "phase-device-config");
         if (!status)
+        {
             status = am_hal_mspi_control(mspi, AM_HAL_MSPI_REQ_PIOMIXED_CONFIG, &mode);
+            mb8_nand_diag_hal(status, "phase-PIO-mixed-config");
+        }
         if (!status)
             current_width = p->data_width;
     }
@@ -107,6 +115,7 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
         am_hal_mspi_instr_addr_t length = {.eInstrCfg = AM_HAL_MSPI_INSTR_1_BYTE,
             .eAddrCfg                                 = (am_hal_mspi_addr_e)(address_bytes - 1)};
         status = am_hal_mspi_control(mspi, AM_HAL_MSPI_REQ_SET_INSTR_ADDR_LEN, &length);
+        mb8_nand_diag_hal(status, "phase-instruction-address-length");
         if (!status)
             current_address_bytes = address_bytes;
     }
@@ -199,6 +208,7 @@ static int transfer(void *ctx,
     }
     if (status)
     {
+        mb8_nand_diag_hal(status, p.dma ? "quad-DMA-transfer" : "serial-PIO-transfer");
         r = status == AM_HAL_STATUS_TIMEOUT ? DS35_TIMEOUT : DS35_IO;
         abort_controller();
         return r;
@@ -220,16 +230,19 @@ static int quad_ready(void *ctx, bool enabled)
     (void)ctx;
     if (poisoned || !mspi)
         return DS35_NOT_READY;
-    /* Chip protocol invokes this only after exact ID, main-array mode, ECC and
-     * QE readback. Before then even an opted-in48MHz build probes at12MHz.
+    /* Enable only after exact ID/main-array/QE/ECC readback. Disable selects
+     * the initial12MHz clock BEFORE restoring B0, also when feature setup
+     * failed but serial transport remains healthy. It sends no NAND command.
      */
     am_hal_mspi_clock_e clock =
         (am_hal_mspi_clock_e)(enabled ? target_divider : AM_HAL_MSPI_CLK_12MHZ);
-    if (am_hal_mspi_control(mspi, AM_HAL_MSPI_REQ_CLOCK_CONFIG, &clock))
+    uint32_t status = am_hal_mspi_control(mspi, AM_HAL_MSPI_REQ_CLOCK_CONFIG, &clock);
+    if (mb8_nand_diag_hal(status, enabled ? "clock-up-after-QE" : "shutdown-clock-down") < 0)
     {
         abort_controller();
         return DS35_IO;
     }
+    mb8_nand_diag_active_clock(enabled ? mb8_nand_board.clock_hz : 12000000u);
     quad_enabled = enabled;
     return DS35_OK;
 }
@@ -391,6 +404,7 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
         mb8_nand_mspi_close();
         return DS35_IO;
     }
+    mb8_nand_diag_active_clock(12000000u);
     current_width         = 1;
     current_address_bytes = 2;
     quad_enabled          = false;

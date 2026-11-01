@@ -233,6 +233,11 @@ static bool claim_worker(void)
     return true;
 }
 
+const struct ds35_shutdown_diagnostic *mb8_storage_shutdown_diagnostic(void)
+{
+    return &nand.shutdown;
+}
+
 int mb8_storage_probe_only(void)
 {
     raw_identified   = false;
@@ -250,6 +255,7 @@ int mb8_storage_probe_only(void)
         return -1;
     }
     /* Zero count is an empty array-access range, NOT a guessed partition. */
+    mb8_nand_diag_probe_started();
     r = ds35_probe(&nand, &bus, 0, 0);
     if (r == DS35_OK)
     {
@@ -262,6 +268,11 @@ int mb8_storage_probe_only(void)
     status_text = r < 0          ? "ID/status probe failed (expected E5 A1); no filesystem access"
                   : shutdown < 0 ? "ID verified; feature restoration failed, reset required"
                                  : "E5 A1 ID/status verified; no array access or protection unlock";
+    if (r >= 0 && shutdown >= 0 && mb8_nand_bus_diagnostic()->result < 0)
+    {
+        status_text = "ID/status verified; controller cleanup failed, reset required";
+        return -1;
+    }
     return r < 0 || shutdown < 0 ? -1 : 0;
 }
 
@@ -333,6 +344,7 @@ int mb8_storage_raw_read_pair(uint32_t physical_page, void *first, void *second,
         return r;
     /* Explicit RAW diagnostic block, not a filesystem partition. No writable
      * handle escapes; no allow_writes/PROGRAM/ERASE/BBM-mark/YAFFS calls here. */
+    mb8_nand_diag_probe_started();
     r = ds35_probe(&nand, &bus, physical_page / DS35_PAGES_PER_BLOCK, 1);
     if (r == DS35_OK)
         r = ds35_check_bad(&nand, physical_page / DS35_PAGES_PER_BLOCK);
@@ -390,6 +402,7 @@ int mb8_storage_mount(bool read_only)
         status_text = mb8_nand_bus_diagnostic()->reason;
         return -1;
     }
+    mb8_nand_diag_probe_started();
     r = ds35_probe(&nand, &bus, mb8_nand_board.first_block, mb8_nand_board.block_count);
     if (r < 0)
     {

@@ -28,7 +28,10 @@ struct mb8_storage_usage
 /* Startup worker only. ID-only probe has no accessible array range. */
 void mb8_storage_startup(void);
 int  mb8_storage_probe_only(void);
-int  mb8_storage_get_usage(struct mb8_storage_usage *);
+/* Same storage worker only, snapshot valid until next NAND probe. */
+struct ds35_shutdown_diagnostic;
+const struct ds35_shutdown_diagnostic *mb8_storage_shutdown_diagnostic(void);
+int                                    mb8_storage_get_usage(struct mb8_storage_usage *);
 #if WATCH_NAND_STARTUP_TESTS
 /* Explicit RAW diagnostic only: <=256B twice, closed read-only transaction.
  * Does NOT infer a filesystem partition or alter the ID-only empty-range API. */
