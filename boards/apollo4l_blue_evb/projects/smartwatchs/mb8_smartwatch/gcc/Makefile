@@ -15,6 +15,8 @@ WATCH_NAND_MSPI_QUAD ?= 1
 WATCH_NAND_STARTUP_TESTS ?= 1
 WATCH_NAND_TEST_WRITE ?= 0
 WATCH_NAND_FULL_FORMAT ?= 0
+# Temporary branch only: explicit debugger arming is required.
+WATCH_NAND_ONESHOT ?= 0
 # Experimental stock-derived capture timing for quad reads; 0 restores HAL defaults.
 WATCH_NAND_STOCK_RX_TIMING ?= 1
 ifneq ($(filter $(WATCH_NAND_STOCK_RX_TIMING),0 1),$(WATCH_NAND_STOCK_RX_TIMING))
@@ -23,13 +25,21 @@ endif
 ifneq ($(filter $(WATCH_NAND_FULL_FORMAT),0 1),$(WATCH_NAND_FULL_FORMAT))
 $(error WATCH_NAND_FULL_FORMAT must be 0 or 1)
 endif
-# Formatting/write-test authorization was withdrawn. Old flash commands must
-# fail before any image is built; there is deliberately no bypass flag.
+# Temporary, debugger-armed image only. Never enable ordinary write-test boot.
+ifneq ($(filter $(WATCH_NAND_ONESHOT),0 1),$(WATCH_NAND_ONESHOT))
+$(error WATCH_NAND_ONESHOT must be 0 or 1)
+endif
 ifeq ($(WATCH_NAND_FULL_FORMAT),1)
-$(error Full-format authorization withdrawn: read-only investigation only; use WATCH_NAND_FULL_FORMAT=0)
+ifneq ($(WATCH_NAND_ONESHOT):$(WATCH_NAND_YAFFS2):$(WATCH_NAND_MSPI_QUAD):$(WATCH_NAND_TEST_WRITE):$(WATCH_NAND_STARTUP_TESTS),1:1:1:0:0)
+$(error Full format requires ONESHOT=1 NAND=1 QUAD=1 TEST_WRITE=0 STARTUP_TESTS=0)
+endif
+else
+ifneq ($(WATCH_NAND_ONESHOT),0)
+$(error ONESHOT requires FULL_FORMAT=1)
+endif
 endif
 ifeq ($(WATCH_NAND_TEST_WRITE),1)
-$(error Write-test authorization withdrawn: read-only investigation only; use WATCH_NAND_TEST_WRITE=0)
+$(error Ordinary write-test boot is disabled)
 endif
 ifneq ($(filter $(WATCH_NAND_STARTUP_TESTS),0 1),$(WATCH_NAND_STARTUP_TESTS))
 $(error WATCH_NAND_STARTUP_TESTS must be 0 or 1)
@@ -96,8 +106,10 @@ SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(AMBIQ_SRC) $(NEMA_SRC) $(UTIL_SRC) $
 # Isolated NAND branch: guarded startup worker, no LVGL/display dependencies.
 ifeq ($(WATCH_NAND_YAFFS2),1)
 NAND_SRC := $(wildcard ../src/drivers/nand/*.c ../src/drivers/nand/yaffs2/*.c)
-# Retained for history only, never selected by a read-only investigation build.
+# Temporary formatter is selected only in the explicit one-shot image.
+ifeq ($(WATCH_NAND_FULL_FORMAT),0)
 NAND_SRC := $(filter-out ../src/drivers/nand/mb8_storage_format.c,$(NAND_SRC))
+endif
 ifeq ($(WATCH_NAND_STARTUP_TESTS),0)
 NAND_SRC := $(filter-out ../src/drivers/nand/mb8_storage_startup_tests.c,$(NAND_SRC))
 endif
@@ -119,6 +131,7 @@ INCLUDE_DIRS += $(APP_DIRS) ../src/drivers/nand
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
 CPPFLAGS += -DWATCH_NATIVE_RGB565=1 -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_COPY=$(GPU_COPY) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
 CPPFLAGS += -DWATCH_NAND_STOCK_RX_TIMING=$(WATCH_NAND_STOCK_RX_TIMING)
+CPPFLAGS += -DWATCH_NAND_ONESHOT=$(WATCH_NAND_ONESHOT)
 CPPFLAGS += -DWATCH_NAND_FULL_FORMAT=$(WATCH_NAND_FULL_FORMAT)
 CPPFLAGS += -DWATCH_NAND_STARTUP_TESTS=$(WATCH_NAND_STARTUP_TESTS) -DWATCH_NAND_TEST_WRITE=$(WATCH_NAND_TEST_WRITE)
 CPPFLAGS += -DWATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) -DWATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD)
@@ -144,7 +157,7 @@ NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 FORCE:
 $(CONFIG)/.compiler-flags: FORCE
 	@mkdir -p $(CONFIG)
-	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) WATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD) WATCH_NAND_STARTUP_TESTS=$(WATCH_NAND_STARTUP_TESTS) WATCH_NAND_TEST_WRITE=$(WATCH_NAND_TEST_WRITE) WATCH_NAND_FULL_FORMAT=$(WATCH_NAND_FULL_FORMAT) WATCH_NAND_STOCK_RX_TIMING=$(WATCH_NAND_STOCK_RX_TIMING) CFLAGS=$(CFLAGS)' > $@.tmp
+	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) WATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD) WATCH_NAND_STARTUP_TESTS=$(WATCH_NAND_STARTUP_TESTS) WATCH_NAND_TEST_WRITE=$(WATCH_NAND_TEST_WRITE) WATCH_NAND_FULL_FORMAT=$(WATCH_NAND_FULL_FORMAT) WATCH_NAND_ONESHOT=$(WATCH_NAND_ONESHOT) WATCH_NAND_STOCK_RX_TIMING=$(WATCH_NAND_STOCK_RX_TIMING) CFLAGS=$(CFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 

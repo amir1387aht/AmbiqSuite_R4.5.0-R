@@ -693,7 +693,7 @@ static void consensus_evidence(uint32_t page, bool fast, int r, const struct ds3
 {
     mb8_storage_log(
         "[NAND FORMAT] %s page=%u rc=%d pass=%u mode=%u offset=%u serial-page-fnv=%08x compared-window-fnv=%08x\r\n",
-        fast ? "optional48 diagnostic" : "MANDATORY12 consensus",
+        fast ? "MANDATORY48 consensus" : "MANDATORY12 consensus",
         (unsigned)page,
         r,
         e->pass,
@@ -702,7 +702,7 @@ static void consensus_evidence(uint32_t page, bool fast, int r, const struct ds3
         (unsigned)e->serial_hash,
         (unsigned)e->compared_hash);
     if (e->policy_reset_result < 0)
-        mb8_storage_log("[NAND FORMAT] read-policy reset-to12 FAILED rc=%d; no unlock/erase even if48 data mismatch is otherwise optional\r\n", e->policy_reset_result);
+        mb8_storage_log("[NAND FORMAT] read-policy reset-to-normal FAILED rc=%d; no unlock/erase\r\n", e->policy_reset_result);
     if (e->mismatch)
     {
         /* Bounded read-debug bytes only. The user authorized discarding stock
@@ -788,23 +788,28 @@ int mb8_storage_full_erase(void)
         if (r < 0)
             goto close;
     }
-    if (mb8_nand_board.clock_hz == 48000000u)
+    /* Actual erase, program, read and YAFFS tests use48MHz. Every selected
+     * preflight page must also agree at that speed before protection unlock. */
+    if (mb8_nand_board.clock_hz != 48000000u)
+    {
+        r = DS35_NOT_READY;
+        goto close;
+    }
+    phase = "mandatory48 same-cache preflight BEFORE unlock";
+    for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); i++)
     {
         struct ds35_read_consensus e;
-        r = ds35_read_consensus(&nand, samples[0], true, &e);
-        consensus_evidence(samples[0], true, r, &e);
-        /* A healthy48 data mismatch is diagnostic, not a12MHz gate. A HAL or
-         * ECC failure still stops: never replay a poisoned transport. */
-        if (r < 0 && (!e.mismatch || nand.fault))
+        r = ds35_read_consensus(&nand, samples[i], true, &e);
+        consensus_evidence(samples[i], true, r, &e);
+        if (r < 0)
             goto close;
-        r = DS35_OK;
     }
-    phase = "authorized A0 unlock AFTER12 consensus";
+    phase = "authorized A0 unlock AFTER12+48 consensus";
     r     = ds35_allow_writes(&nand);
     if (r < 0)
         goto close;
     mb8_storage_log(
-        "[NAND FORMAT] READY:12 consensus passed; destructive scratch block=%u, then all factory-good blocks0..1023;12MHz only\r\n",
+        "[NAND FORMAT] READY:12+48 consensus passed; destructive scratch block=%u, then all factory-good blocks0..1023;48MHz data\r\n",
         (unsigned)first);
     phase = "scratch erase/program/read known pattern";
     r     = ds35_erase(&nand, first);

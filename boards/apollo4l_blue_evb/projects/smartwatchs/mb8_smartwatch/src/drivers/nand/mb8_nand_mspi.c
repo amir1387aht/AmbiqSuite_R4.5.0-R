@@ -289,8 +289,8 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
     }
     uint32_t data_divider = target_divider;
 #if WATCH_NAND_FULL_FORMAT
-    /* Mode3 persists for the complete format/write/remount session. Only the
-     * explicitly requested read-only48MHz diagnostic can raise it. */
+    /* Modes1..3 are conservative12MHz preflight. Mode0 is the normal
+     * 48MHz data path; mode4 is the explicit48MHz comparison. */
     if (diagnostic_read_mode && diagnostic_read_mode != 4)
         data_divider = AM_HAL_MSPI_CLK_12MHZ;
 #endif
@@ -631,7 +631,7 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
         .transfer = transfer, .delay_us = delay, .data_width = 4, .quad_ready = quad_ready};
 #if WATCH_NAND_FULL_FORMAT
     bus->read_mode       = read_mode;
-    diagnostic_read_mode = 3; /* Format builds never accelerate data by default. */
+    diagnostic_read_mode = 0; /* Actual format/file I/O uses selected 48MHz. */
 #endif
     return DS35_OK;
 }

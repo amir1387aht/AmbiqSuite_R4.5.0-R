@@ -21,10 +21,16 @@
 #ifndef WATCH_NAND_TEST_WRITE
 #define WATCH_NAND_TEST_WRITE 0
 #endif
-/* User withdrew formatting/write-test permission. Defense in depth for manual
- * compiler invocations that bypass Makefile validation; no override switch. */
-#if WATCH_NAND_FULL_FORMAT || WATCH_NAND_TEST_WRITE
-#error "Destructive boot authorization withdrawn; read-only investigation only"
+/* Temporary formatter branch: fail closed unless its explicit debugger-arm
+ * mode is selected, even for direct compiler invocations. */
+#ifndef WATCH_NAND_ONESHOT
+#define WATCH_NAND_ONESHOT 0
+#endif
+#if (WATCH_NAND_FULL_FORMAT != 0 && WATCH_NAND_FULL_FORMAT != 1) || \
+    (WATCH_NAND_ONESHOT != 0 && WATCH_NAND_ONESHOT != 1) || WATCH_NAND_TEST_WRITE || \
+    (WATCH_NAND_FULL_FORMAT && !WATCH_NAND_ONESHOT) || \
+    (WATCH_NAND_ONESHOT && !WATCH_NAND_FULL_FORMAT)
+#error "Destructive boot requires the explicitly armed temporary formatter"
 #endif
 #define DS35_MAX_CLOCK_HZ    83000000u
 #define DS35_PAGE            2048u
@@ -68,7 +74,7 @@ struct ds35_bus
 #if WATCH_NAND_FULL_FORMAT
     /* TEMP format preflight only. Read modes never issue a NAND command or
      * enable writes. mode0=normal,1=serial PIO12,2=quad PIO12,3=quad DMA12,
-     * 4=quad DMA48. Format mode pins all subsequent quad transfers to12MHz. */
+     * 4=quad DMA48. Mode0 restores normal48MHz data timing. */
     int (*read_mode)(void *, unsigned);
 #endif
 };

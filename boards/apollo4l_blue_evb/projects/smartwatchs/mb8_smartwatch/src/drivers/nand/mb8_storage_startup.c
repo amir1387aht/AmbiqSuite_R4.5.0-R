@@ -2,6 +2,7 @@
  * Permanent startup worker/report. Temporary diagnostics are a separate unit.
  */
 #include "mb8_storage.h"
+#include "am_mcu_apollo.h"
 #include "mb8_nand_board.h"
 #include "mb8_nand_transport.h"
 #include "ds35m1gb.h"
@@ -225,11 +226,33 @@ void mb8_storage_report_diagnostics(void)
 }
 #endif
 
+#if WATCH_NAND_FULL_FORMAT
+/* Zeroed at every boot. A debugger must write the token AFTER startup. The
+ * value is consumed before any destructive action; the worker never rearms. */
+volatile uint32_t mb8_format_arm_token;
+#define MB8_FORMAT_ARM_TOKEN 0x6d38464du
+#endif
+
 static void startup_worker(void *unused)
 {
     (void)unused;
     while (!watch_gpu_ready)
         vTaskDelay(pdMS_TO_TICKS(10));
+#if WATCH_NAND_FULL_FORMAT
+    mb8_storage_log("[NAND FORMAT] ONE-SHOT READY: no erase until debugger token; "
+                    "this will destroy ALL NAND contents; reset disarms.\r\n");
+    while (mb8_format_arm_token != MB8_FORMAT_ARM_TOKEN)
+        vTaskDelay(pdMS_TO_TICKS(100));
+    mb8_format_arm_token = 0;
+    __DMB();
+    mb8_storage_log("[NAND FORMAT] armed; starting irreversible erase and tests once.\r\n");
+    bool pass = mb8_storage_format_boot();
+    mb8_storage_log("[NAND FORMAT] ONE-SHOT RESULT %s; no automatic retry or rearm; "
+                    "replace this temporary firmware after recording logs.\r\n",
+        pass ? "PASS" : "FAIL");
+    for (;;)
+        vTaskSuspend(NULL);
+#else
     mb8_storage_log("[NAND] read-only investigation: full-format and write-test boot modes "
                     "DISABLED (authorization withdrawn).\r\n");
     mb8_storage_log("[NAND] test-write request=%u (default0); actual writes also require "
@@ -326,6 +349,7 @@ startup_done:; /* C11 label precedes a statement even when write-test logging is
      * No future requests are scheduled by this one-shot startup diagnostic. */
     for (;;)
         vTaskSuspend(NULL);
+#endif
 }
 
 void mb8_storage_startup(void)

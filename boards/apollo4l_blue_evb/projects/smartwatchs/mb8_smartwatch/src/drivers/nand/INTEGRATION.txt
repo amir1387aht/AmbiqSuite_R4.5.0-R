@@ -1,3 +1,17 @@
+TEMPORARY FORMAT BRANCH NOTICE (supersedes historical read-only statements)
+This branch contains a one-shot destructive image. FULL_FORMAT=1 requires
+ONESHOT=1, STARTUP_TESTS=0, NAND=1, QUAD=1 and TEST_WRITE=0. It waits for a
+debugger token that is reset to zero on every boot. After one trigger it runs
+at most once and suspends; it does not repeat on reset without another token.
+The arm_format_once.py tool verifies the exact local ELF/BIN and reads back the
+running MRAM image before sending the token. J-Link is required. Full-chip
+format irreversibly destroys ALL existing stock files; backup is not complete.
+Preflight requires 12MHz and 48MHz same-cache agreement before any unlock or
+erase. Actual data transfer and file tests use the configured 48MHz in-spec
+clock; rates are measured, not theoretical. Bad blocks are skipped; no claim
+of power-loss proof. Keep power stable and capture the complete UART log.
+Temporary branch only; replace firmware after result and remove this machinery.
+
 MI BAND8 STOCK PROFILE / GUARDED YAFFS2 / MSPI1-1-4
 ================================================
 Experimental software, not a validated on-watch filesystem. This isolated branch

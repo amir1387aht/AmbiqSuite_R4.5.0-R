@@ -431,11 +431,11 @@ int ds35_read_consensus(
         if (r < 0)
             break;
     }
-    /* Reset selection policy to conservative12 on every healthy path, including
-     * a data disagreement. A poisoned transport is never replayed. */
+    /* Restore the ordinary fastest in-spec data policy on every healthy path.
+     * Serial operations still select12MHz. A poisoned bus is never replayed. */
     if (!n->fault)
     {
-        int reset              = n->bus.read_mode(n->bus.ctx, 3);
+        int reset              = n->bus.read_mode(n->bus.ctx, 0);
         e->policy_reset_result = reset;
         if (reset < 0)
             n->fault = true;

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only
- * TEMPORARY destructive boot mode. Never selected by an ordinary build.
+ * TEMPORARY debugger-armed destructive mode. Never selected by an ordinary build.
  * Runtime provisioning is deliberately not a persistent format/adoption marker.
+ * This temporary image waits for a debugger token; reset alone cannot arm it.
  */
 #include "mb8_storage.h"
 #include "mb8_storage_log.h"
@@ -12,7 +13,7 @@
 #include <errno.h>
 
 #if WATCH_NAND_FULL_FORMAT
-static uint8_t    file_buffer[256];
+static uint8_t    file_buffer[2048];
 static const char directory[] = "/nand/format-check";
 static const char filename[]  = "/nand/format-check/known-pattern.bin";
 
@@ -62,7 +63,7 @@ static bool file_case(unsigned bytes)
             bytes - offset < sizeof(file_buffer) ? bytes - offset : sizeof(file_buffer);
         if (yaffs_write(fd, file_buffer, chunk) != (int)chunk)
             goto done;
-        if ((offset & 1023u) == 0)
+        if (offset && (offset & 65535u) == 0)
             vTaskDelay(1);
     }
     if (yaffs_fsync(fd) < 0)
@@ -96,7 +97,7 @@ static bool file_case(unsigned bytes)
         for (unsigned i = 0; i < chunk; i++)
             if (file_buffer[i] != file_byte(offset + i))
                 goto done;
-        if ((offset & 1023u) == 0)
+        if (offset && (offset & 65535u) == 0)
             vTaskDelay(1);
     }
     if (yaffs_read(fd, file_buffer, 1) != 0)
@@ -169,7 +170,7 @@ done:
         pass ? "PASS" : "FAIL",
         phase);
     mb8_storage_log(
-        "[NAND FORMAT] runtime provision is THIS BOOT ONLY. Reflash FULL_FORMAT=0 to prevent repeated erasure; ordinary profile remains RO/unprovisioned.\r\n");
+        "[NAND FORMAT] runtime provision is THIS BOOT ONLY. Replace temporary firmware; ordinary profile remains RO/unprovisioned.\r\n");
     if (!pass)
         mb8_storage_log("[NAND FORMAT] filesystem failure reason=%s YAFFS-error=%d\r\n",
             mb8_storage_status(),
