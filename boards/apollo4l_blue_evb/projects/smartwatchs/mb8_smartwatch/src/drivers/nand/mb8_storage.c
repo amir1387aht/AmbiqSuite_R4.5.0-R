@@ -36,6 +36,7 @@ static TaskHandle_t      owner;
 static bool              registered, scan_error;
 #if WATCH_NAND_DEBUG_REPRO
 bool mb8_storage_debug_failed(void) { return scan_error; }
+uint32_t mb8_storage_debug_last_page(void) { return debug_page_valid ? debug_page : UINT32_MAX; }
 static uint32_t debug_hash(const u8 *p, unsigned n)
 {
     uint32_t h = 2166136261u;
@@ -238,7 +239,48 @@ static int read_chunk(
 static int write_chunk(
     struct yaffs_dev *d, int page, const u8 *data, int bytes, const u8 *oob, int on)
 {
-#if WATCH_NAND_DEBUG_REPRO
+#if WATCH_NAND_WRITE_TRACE
+    static uint8_t verify[DS35_PAGE], tag_verify[DS35_TAG_CAPACITY];
+    if (d->read_only || scan_error || !nand.writable || page == 46 ||
+        bytes != DS35_PAGE || !data || !oob || on <= 0 || on > DS35_TAG_CAPACITY) {
+        mb8_storage_log("[NAND WRITE] program denied page=%d RO=%u failed=%u writable=%u bytes=%d tags=%d\r\n",
+            page, (unsigned)d->read_only, (unsigned)scan_error, (unsigned)nand.writable, bytes, on);
+        return YAFFS_FAIL;
+    }
+    int blank = ds35_read(&nand, (uint32_t)page, verify, sizeof(verify), tag_verify, sizeof(tag_verify));
+    if (blank < 0) {
+        mb8_storage_log("[NAND WRITE] blank-check read failed page=%d rc=%d phase=%s\r\n", page, blank, nand.operation.phase);
+        scan_error = true; nand.writable = false; return YAFFS_FAIL;
+    }
+    for (unsigned i = 0; i < sizeof(verify); i++)
+        if (verify[i] != 0xff) {
+            mb8_storage_log("[NAND WRITE] blank-check failed page=%d main-offset=%u\r\n", page, i);
+            scan_error = true; nand.writable = false; return YAFFS_FAIL;
+        }
+    for (unsigned i = 0; i < sizeof(tag_verify); i++)
+        if (tag_verify[i] != 0xff) {
+            mb8_storage_log("[NAND WRITE] blank-check failed page=%d user-OOB-offset=%u\r\n", page, i + 4);
+            scan_error = true; nand.writable = false; return YAFFS_FAIL;
+        }
+    mb8_storage_log("[NAND WRITE] page=%d input0=%02x input-fnv=%08x tags-fnv=%08x target-clock=12000000\r\n",
+        page, (unsigned)data[0], (unsigned)debug_hash(data, (unsigned)bytes), (unsigned)debug_hash(oob, (unsigned)on));
+    int result = ds35_program(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
+    if (result < 0) { scan_error = true; nand.writable = false;
+        mb8_storage_log("[NAND WRITE] PROGRAM FAIL page=%d rc=%d phase=%s status-valid=%u C0=%02x\r\n",
+            page, result, nand.operation.phase, (unsigned)nand.operation.status_valid, (unsigned)nand.operation.status);
+        return YAFFS_FAIL; }
+    result = ds35_read(&nand, (uint32_t)page, verify, sizeof(verify), tag_verify, (size_t)on);
+    if (result < 0) { scan_error = true; nand.writable = false;
+        mb8_storage_log("[NAND WRITE] VERIFY READ FAIL page=%d rc=%d phase=%s\r\n", page, result, nand.operation.phase); return YAFFS_FAIL; }
+    unsigned diffs = 0, first = 0;
+    for (unsigned i = 0; i < sizeof(verify); i++) if (verify[i] != data[i]) { if (!diffs) first=i; diffs++; }
+    unsigned td = 0; for (int i=0;i<on;i++) if (tag_verify[i] != oob[i]) td++;
+    mb8_storage_log("[NAND WRITE] VERIFY page=%d rc=%d status-valid=%u C0=%02x got0=%02x got-fnv=%08x data-diffs=%u first=%d expected=%02x actual=%02x tag-diffs=%u\r\n",
+        page, result, (unsigned)nand.operation.status_valid, (unsigned)nand.operation.status, (unsigned)verify[0], (unsigned)debug_hash(verify,sizeof(verify)), diffs,
+        diffs ? (int)first : -1, diffs ? (unsigned)data[first] : 0u, diffs ? (unsigned)verify[first] : 0u, td);
+    if (diffs || td) { scan_error = true; nand.writable = false; return YAFFS_FAIL; }
+    return YAFFS_OK;
+#elif WATCH_NAND_DEBUG_REPRO
     (void)d; (void)page; (void)data; (void)bytes; (void)oob; (void)on;
     return YAFFS_FAIL;
 #endif
@@ -265,7 +307,20 @@ static int write_chunk(
 
 static int erase_block(struct yaffs_dev *d, int block)
 {
-#if WATCH_NAND_DEBUG_REPRO
+#if WATCH_NAND_WRITE_TRACE
+    int internal = block + d->block_offset;
+    if (d->read_only || scan_error || !nand.writable || block < 1 ||
+        internal < (int)d->internal_start_block || internal > (int)d->internal_end_block ||
+        yaffs_get_block_info(d, internal)->block_state != YAFFS_BLOCK_STATE_CHECKPOINT) {
+        scan_error = true; nand.writable = false;
+        mb8_storage_log("[NAND WRITE] refused non-checkpoint/block0 erase block=%d\r\n", block);
+        return YAFFS_FAIL;
+    }
+    int result = ds35_erase(&nand, (uint32_t)block);
+    mb8_storage_log("[NAND WRITE] invalidate old checkpoint block=%d rc=%d\r\n", block, result);
+    if (result != DS35_OK) { scan_error = true; nand.writable = false; return YAFFS_FAIL; }
+    return YAFFS_OK;
+#elif WATCH_NAND_DEBUG_REPRO
     (void)d; (void)block;
     return YAFFS_FAIL;
 #endif
@@ -1040,7 +1095,7 @@ close:;
 int mb8_storage_mount(bool read_only)
 {
 #if WATCH_NAND_DEBUG_REPRO
-    if (!read_only) { status_text = "debug build forbids all writable mounts"; return -1; }
+    if (!read_only && !WATCH_NAND_WRITE_TRACE) { status_text = "debug build forbids all writable mounts"; return -1; }
 #endif
     if (!task_context())
     {
@@ -1123,6 +1178,12 @@ int mb8_storage_mount(bool read_only)
         dev.param.end_block             = partition_first() + partition_count() - 1;
         dev.param.n_reserved_blocks     = 5;
         dev.param.n_caches              = MB8_NAND_CACHE_PAGES;
+#if WATCH_NAND_WRITE_TRACE
+        dev.param.skip_checkpt_wr       = 1;
+        dev.param.disable_bad_block_marking = 1;
+        extern unsigned int yaffs_wr_attempts;
+        yaffs_wr_attempts = 1;
+#endif
         dev.param.cache_bypass_aligned  = 1;
         dev.param.use_nand_ecc          = 1;
         dev.param.no_tags_ecc           = 0;
@@ -1172,6 +1233,16 @@ int mb8_storage_mount(bool read_only)
     status_text = read_only ? "YAFFS2 /nand mounted read-only" : "YAFFS2 /nand mounted read-write";
     return 0;
 }
+
+#if WATCH_NAND_WRITE_TRACE
+void mb8_storage_write_trace_abort(void)
+{
+    /* Prevent further array mutations during forced cleanup after any failure. */
+    scan_error = true;
+    nand.writable = false;
+    dev.read_only = 1;
+}
+#endif
 
 int mb8_storage_unmount(void)
 {

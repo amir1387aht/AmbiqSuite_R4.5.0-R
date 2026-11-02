@@ -3,6 +3,9 @@
  * No QPI/4-4-4, XIP, display sharing, guessed pin mux, or96MHz E5 A1 operation.
  */
 #include "mb8_nand_mspi.h"
+#if WATCH_NAND_WRITE_TRACE
+#include "mb8_storage_log.h"
+#endif
 #include "mb8_nand_mspi_plan.h"
 #include "mb8_nand_board.h"
 #include "mb8_nand_diagnostics.h"
@@ -333,6 +336,11 @@ static int transfer(void *ctx,
         return r;
     if (tx)
         memcpy(bounce, tx, len);
+#if WATCH_NAND_WRITE_TRACE
+    if (p.opcode == 0x32 && tx && len)
+        mb8_storage_log("[NAND WRITE] DMA buffer input0=%02x bounce0=%02x length=%u\r\n",
+            (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len);
+#endif
     uint32_t status;
     if (!p.dma)
     {

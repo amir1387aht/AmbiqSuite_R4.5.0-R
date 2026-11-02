@@ -16,6 +16,12 @@
 #ifndef WATCH_NAND_DEBUG_REPRO
 #define WATCH_NAND_DEBUG_REPRO 0
 #endif
+#ifndef WATCH_NAND_WRITE_TRACE
+#define WATCH_NAND_WRITE_TRACE 0
+#endif
+#if WATCH_NAND_WRITE_TRACE && !WATCH_NAND_DEBUG_REPRO
+#error "WRITE_TRACE requires DEBUG_REPRO"
+#endif
 #if WATCH_NAND_DEBUG_REPRO
 #define MB8_NAND_PARTITION_CONFIRMED 1
 #else
@@ -28,7 +34,11 @@
 #else
 #define MB8_NAND_YAFFS_PROVISIONED_CONFIRMED 0
 #endif
+#if WATCH_NAND_WRITE_TRACE
+#define MB8_NAND_WRITES_AUTHORIZED           1
+#else
 #define MB8_NAND_WRITES_AUTHORIZED           0
+#endif
 /* Source: atc1441/ATCmiBand8fw, commit
  * 931216a15337fa371f3a7d2de6dfb216a90093a4, Pinout_MiBand8.ods,
  * Tabelle1 rows59..62,67,70. Upstream labels these Flash MOSI/MISO/WP/Hold,
@@ -66,7 +76,11 @@
  * Active stock clock/pull resistors not proven by firmware.
  * MCU supported clocks only, <=DS35M1GB83MHz;96/133MHz remain rejected.
  */
+#if WATCH_NAND_WRITE_TRACE
+#define MB8_NAND_CLOCK_HZ 12000000u
+#else
 #define MB8_NAND_CLOCK_HZ 48000000u
+#endif
 /* Eraseblock indices; deliberately no guessed partition or whole-chip default. */
 #if WATCH_NAND_DEBUG_REPRO
 /* Explicit RO inspection of the just-formatted whole-device OOB4 profile. */
