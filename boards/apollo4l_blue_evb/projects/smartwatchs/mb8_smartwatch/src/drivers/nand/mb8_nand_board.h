@@ -13,10 +13,21 @@
  * This is a profile assumption, NOT firmware proof of external resistors. */
 #define MB8_NAND_PROFILE_STOCK_MB8   1u
 #define MB8_NAND_PROFILE             MB8_NAND_PROFILE_STOCK_MB8
+#ifndef WATCH_NAND_DEBUG_REPRO
+#define WATCH_NAND_DEBUG_REPRO 0
+#endif
+#if WATCH_NAND_DEBUG_REPRO
+#define MB8_NAND_PARTITION_CONFIRMED 1
+#else
 #define MB8_NAND_PARTITION_CONFIRMED 0
+#endif
 /* Confirm an independently provisioned YAFFS2 image with THIS tag layout.
  * A successful scan of blank/stock NAND does not establish YAFFS identity. */
+#if WATCH_NAND_DEBUG_REPRO
+#define MB8_NAND_YAFFS_PROVISIONED_CONFIRMED 1
+#else
 #define MB8_NAND_YAFFS_PROVISIONED_CONFIRMED 0
+#endif
 #define MB8_NAND_WRITES_AUTHORIZED           0
 /* Source: atc1441/ATCmiBand8fw, commit
  * 931216a15337fa371f3a7d2de6dfb216a90093a4, Pinout_MiBand8.ods,
@@ -57,8 +68,14 @@
  */
 #define MB8_NAND_CLOCK_HZ 48000000u
 /* Eraseblock indices; deliberately no guessed partition or whole-chip default. */
+#if WATCH_NAND_DEBUG_REPRO
+/* Explicit RO inspection of the just-formatted whole-device OOB4 profile. */
+#define MB8_NAND_FIRST_BLOCK 0u
+#define MB8_NAND_BLOCK_COUNT 1024u
+#else
 #define MB8_NAND_FIRST_BLOCK MB8_NAND_UNKNOWN
 #define MB8_NAND_BLOCK_COUNT 0u
+#endif
 #define MB8_NAND_CACHE_PAGES 4u
 /* Separate bounded allocation budget; does not alter the UI allocator. */
 #define MB8_NAND_HEAP_LIMIT  (96u * 1024u)

@@ -26,6 +26,11 @@ struct mb8_storage_usage
     uint32_t reserved_blocks, dead_blocks, checkpoint_blocks;
 };
 #if WATCH_NAND_YAFFS2
+#if WATCH_NAND_DEBUG_REPRO
+void mb8_storage_debug_trace(bool enable);
+bool mb8_storage_debug_failed(void);
+void mb8_storage_debug_repro(void);
+#endif
 struct ds35_nand;
 const struct ds35_nand *mb8_storage_protection_snapshot(void);
 #if WATCH_NAND_FULL_FORMAT

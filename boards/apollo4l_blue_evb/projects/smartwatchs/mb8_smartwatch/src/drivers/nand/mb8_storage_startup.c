@@ -230,6 +230,11 @@ static void startup_worker(void *unused)
     (void)unused;
     while (!watch_gpu_ready)
         vTaskDelay(pdMS_TO_TICKS(10));
+#if WATCH_NAND_DEBUG_REPRO
+    mb8_storage_debug_repro();
+    for (;;)
+        vTaskSuspend(NULL);
+#else
     mb8_storage_log("[NAND] read-only investigation: full-format and write-test boot modes "
                     "DISABLED (authorization withdrawn).\r\n");
     mb8_storage_log("[NAND] test-write request=%u (default0); actual writes also require "
@@ -326,6 +331,7 @@ startup_done:; /* C11 label precedes a statement even when write-test logging is
      * No future requests are scheduled by this one-shot startup diagnostic. */
     for (;;)
         vTaskSuspend(NULL);
+#endif
 }
 
 void mb8_storage_startup(void)

@@ -4,6 +4,9 @@
 #include "mb8_storage.h"
 #include "mb8_nand_board.h"
 #include "mb8_nand_transport.h"
+#if WATCH_NAND_DEBUG_REPRO
+#include "mb8_storage_log.h"
+#endif
 #include "yaffs_guts.h"
 #include "yaffsfs.h"
 #include "yaffs_packedtags2.h"
@@ -18,9 +21,23 @@
 
 static struct ds35_nand  nand __attribute__((section(".shared.nand"), aligned(32)));
 static struct yaffs_dev  dev;
+#if WATCH_NAND_DEBUG_REPRO
+static bool debug_trace;
+void mb8_storage_debug_trace(bool enable) { debug_trace = enable; }
+
+#endif
 static SemaphoreHandle_t mutex;
 static TaskHandle_t      owner;
 static bool              registered, scan_error;
+#if WATCH_NAND_DEBUG_REPRO
+bool mb8_storage_debug_failed(void) { return scan_error; }
+static uint32_t debug_hash(const u8 *p, unsigned n)
+{
+    uint32_t h = 2166136261u;
+    while (n--) h = (h ^ *p++) * 16777619u;
+    return h;
+}
+#endif
 #if WATCH_NAND_FULL_FORMAT
 static bool format_provisioned, format_io_failed;
 #endif
@@ -187,6 +204,15 @@ static int read_chunk(
     (void)d;
     *ecc  = YAFFS_ECC_RESULT_UNFIXED;
     int r = ds35_read(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
+#if WATCH_NAND_DEBUG_REPRO
+    if (debug_trace)
+        mb8_storage_log("[NAND DEBUG] chunk page=%d data=%u bytes=%d tags=%d rc=%d status-valid=%u C0=%02x data-fnv=%08x tags-fnv=%08x phase=%s\r\n",
+            page, data != NULL, bytes, on, r, (unsigned)nand.operation.status_valid,
+            (unsigned)nand.operation.status,
+            r >= 0 && data ? (unsigned)debug_hash(data, (unsigned)bytes) : 0u,
+            r >= 0 && oob ? (unsigned)debug_hash(oob, (unsigned)on) : 0u,
+            nand.operation.phase ? nand.operation.phase : "none");
+#endif
     if (r < 0)
     {
         scan_error = true;
@@ -203,6 +229,10 @@ static int read_chunk(
 static int write_chunk(
     struct yaffs_dev *d, int page, const u8 *data, int bytes, const u8 *oob, int on)
 {
+#if WATCH_NAND_DEBUG_REPRO
+    (void)d; (void)page; (void)data; (void)bytes; (void)oob; (void)on;
+    return YAFFS_FAIL;
+#endif
     if (d->read_only)
         return YAFFS_FAIL;
 #if WATCH_NAND_FULL_FORMAT
@@ -226,6 +256,10 @@ static int write_chunk(
 
 static int erase_block(struct yaffs_dev *d, int block)
 {
+#if WATCH_NAND_DEBUG_REPRO
+    (void)d; (void)block;
+    return YAFFS_FAIL;
+#endif
     if (d->read_only)
         return YAFFS_FAIL;
 #if WATCH_NAND_FULL_FORMAT
@@ -249,6 +283,10 @@ static int erase_block(struct yaffs_dev *d, int block)
 
 static int mark_bad(struct yaffs_dev *d, int block)
 {
+#if WATCH_NAND_DEBUG_REPRO
+    (void)d; (void)block;
+    return YAFFS_FAIL;
+#endif
 #if WATCH_NAND_FULL_FORMAT
     /* YAFFS may request retirement after a failed write. This diagnostic stops
      * instead: never turn an ambiguous transport failure into a persistent BBM. */
@@ -948,6 +986,9 @@ close:;
 
 int mb8_storage_mount(bool read_only)
 {
+#if WATCH_NAND_DEBUG_REPRO
+    if (!read_only) { status_text = "debug build forbids all writable mounts"; return -1; }
+#endif
     if (!task_context())
     {
         status_text = "NAND mount requires a running storage worker task";
