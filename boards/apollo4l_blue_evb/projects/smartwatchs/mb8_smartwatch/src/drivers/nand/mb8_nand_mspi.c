@@ -149,6 +149,26 @@ static int select_clock(uint32_t divider, const char *stage)
     return DS35_OK;
 }
 
+/* Apply only the stock-derived RX capture bits; do not change TX, DQS, or
+ * turnaround. CLOCK_CONFIG resets these bits, so apply after clock selection,
+ * with the controller idle, and restore HAL serial timing before controls.
+ * This is an experiment, not proof that either read path is correct. */
+static int select_receive_timing(bool quad_read)
+{
+    const uint32_t stock = (WATCH_NAND_STOCK_RX_TIMING && quad_read) ? 1u : 0u;
+    MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.RXNEG0 = stock;
+    MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.RXCAP0 = stock;
+    __DSB();
+    if (MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.RXNEG0 != stock ||
+        MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.RXCAP0 != stock)
+    {
+        mb8_nand_diag_fail(DS35_IO, "receive-timing-readback", "RX capture bits did not latch");
+        abort_controller();
+        return DS35_IO;
+    }
+    return DS35_OK;
+}
+
 /* WP#/HOLD# must be inactive in serial phases. MSPI serial PADOUTEN releases
  * IO2/3; an unpulled peripheral pad does not guarantee HIGH after a quad read.
  * Preload GPIO latches before selecting push-pull GPIO, only with CS inactive.
@@ -275,6 +295,9 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
         data_divider = AM_HAL_MSPI_CLK_12MHZ;
 #endif
     if (p->dma && select_clock(data_divider, "quad-data-clock") < 0)
+        return DS35_IO;
+    /* The plan permits 6B reads only with quad DMA. Serial03 remains HAL timing. */
+    if (select_receive_timing(p->opcode == 0x6b && p->receive) < 0)
         return DS35_IO;
     return DS35_OK;
 }
@@ -414,6 +437,8 @@ static int quad_ready(void *ctx, bool enabled)
      */
     if (select_clock(
             AM_HAL_MSPI_CLK_12MHZ, enabled ? "quad-arm-serial-clock" : "shutdown-clock-down") < 0)
+        return DS35_IO;
+    if (select_receive_timing(false) < 0)
         return DS35_IO;
 #if WATCH_NAND_FULL_FORMAT
     if (!enabled)

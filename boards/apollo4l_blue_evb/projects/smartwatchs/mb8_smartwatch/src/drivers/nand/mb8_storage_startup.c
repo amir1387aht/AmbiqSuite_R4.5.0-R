@@ -238,6 +238,9 @@ static void startup_worker(void *unused)
     mb8_storage_log("[NAND] stock MiBand8 initial phase: RO; volatile reset/QE/ECC setup only; "
                     "no protection unlock, program, erase or format.\r\n");
 #if WATCH_NAND_MSPI_QUAD
+    mb8_storage_log("[NAND timing] experimental quad-read RXNEG=%u RXCAP=%u; "
+                    "serial RXNEG=0 RXCAP=0; register readback checked; not hardware-validated\r\n",
+        (unsigned)WATCH_NAND_STOCK_RX_TIMING, (unsigned)WATCH_NAND_STOCK_RX_TIMING);
     mb8_storage_log(
         "[NAND] clock: probe/control=12000000Hz quad-data-target=%uHz after E5 A1 + QE/ECC; "
         "engineering selection, NOT recovered Xiaomi operating clock\r\n",

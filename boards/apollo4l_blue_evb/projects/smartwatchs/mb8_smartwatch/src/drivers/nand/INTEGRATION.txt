@@ -546,3 +546,12 @@ not part of the watch project. Reproducible disassembly uses GNU objdump:
    --adjust-vma=0x5e000 --start-address=0x69044 --stop-address=0x6924c image2.bin
 Repeat at0x696c8..0x69738,0x70b70..0x70cf0,0x71448..0x714c4 and
 0xb3730..0xb37c0 for the timing, template selection and reset-copy chain.
+
+EXPERIMENT: STOCK-DERIVED QUAD RECEIVE TIMING (not hardware-validated)
+Default WATCH_NAND_STOCK_RX_TIMING=1 applies RXNEG=1/RXCAP=1 only to 6B
+quad reads after CLOCK_CONFIG, with idle guard and register readback. Serial
+controls and 03 reads restore 0/0. TX, turnaround, DQS and write policy are
+unchanged. Set WATCH_NAND_STOCK_RX_TIMING=0 to compare the old HAL settings;
+pass the flag to flash.bat itself and clean between builds. Results must be
+verified on the watch; agreement or repeatability alone is not proof of data
+correctness. Full-format and write-test boot modes remain hard-disabled.
