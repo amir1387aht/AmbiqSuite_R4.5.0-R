@@ -556,7 +556,10 @@ static int yaffs_write_new_chunk(struct yaffs_dev *dev,
 
 		write_ok = yaffs_wr_chunk_tags_nand(dev, chunk, data, tags);
 
-		if (!bi->skip_erased_check)
+		/* A matching readback must never turn a failed program into success.
+		 * In particular the NAND can report P_FAIL even if its data appear
+		 * correct; preserve that failure for the caller. */
+		if (write_ok == YAFFS_OK && !bi->skip_erased_check)
 			write_ok =
 			    yaffs_verify_chunk_written(dev, chunk, data, tags);
 
