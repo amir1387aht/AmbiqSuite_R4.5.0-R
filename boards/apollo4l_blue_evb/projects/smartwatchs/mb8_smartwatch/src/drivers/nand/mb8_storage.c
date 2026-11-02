@@ -262,8 +262,9 @@ static int write_chunk(
             mb8_storage_log("[NAND WRITE] blank-check failed page=%d user-OOB-offset=%u\r\n", page, i + 4);
             scan_error = true; nand.writable = false; return YAFFS_FAIL;
         }
-    mb8_storage_log("[NAND WRITE] page=%d input0=%02x input-fnv=%08x tags-fnv=%08x target-clock=12000000\r\n",
-        page, (unsigned)data[0], (unsigned)debug_hash(data, (unsigned)bytes), (unsigned)debug_hash(oob, (unsigned)on));
+    mb8_storage_log("[NAND WRITE] page=%d input0=%02x input-fnv=%08x tags-fnv=%08x target-clock=%u\r\n",
+        page, (unsigned)data[0], (unsigned)debug_hash(data, (unsigned)bytes), (unsigned)debug_hash(oob, (unsigned)on),
+        (unsigned)mb8_nand_board.clock_hz);
     int result = ds35_program(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
     if (result < 0) { scan_error = true; nand.writable = false;
         mb8_storage_log("[NAND WRITE] PROGRAM FAIL page=%d rc=%d phase=%s status-valid=%u C0=%02x\r\n",
@@ -540,7 +541,7 @@ int mb8_storage_read_sample(uint32_t relative_page, void *data, size_t bytes)
 }
 
 #if WATCH_NAND_DEBUG_REPRO
-void mb8_storage_debug_compare_last_page(void)
+int mb8_storage_debug_compare_last_page(void)
 {
     static uint8_t baseline[DS35_PAGE], sample[DS35_PAGE];
     uint8_t tags[28];
@@ -548,9 +549,10 @@ void mb8_storage_debug_compare_last_page(void)
         nand.writable || scan_error || !debug_page_valid)
     {
         mb8_storage_log("[NAND DEBUG] raw comparison unavailable (state/page/read error).\r\n");
-        return;
+        return DS35_EINVAL;
     }
     uint32_t page = debug_page;
+    bool mismatch = false;
     for (unsigned i = 0; i < 4; i++)
     {
         bool serial = (i & 1u) != 0;
@@ -562,10 +564,10 @@ void mb8_storage_debug_compare_last_page(void)
             scan_error = true;
             const struct mb8_nand_diagnostic *b = mb8_nand_bus_diagnostic();
             mb8_storage_log("[NAND DEBUG] raw page=%u pass=%u mode=%s FAIL rc=%d phase=%s bus=%d stage=%s HAL-valid=%u HAL=%u\r\n",
-                (unsigned)page, i + 1, serial ? "serial03-PIO12" : "quad6B-DMA48+tags",
+                (unsigned)page, i + 1, serial ? "serial03-PIO12" : "quad6B-DMA+tags",
                 r, nand.operation.phase ? nand.operation.phase : "none", b->result,
                 b->stage ? b->stage : "none", (unsigned)b->hal_valid, (unsigned)b->hal_status);
-            return;
+            return r;
         }
         unsigned differences = 0, first = DS35_PAGE;
         if (i)
@@ -574,12 +576,15 @@ void mb8_storage_debug_compare_last_page(void)
                     if (!differences) first = j;
                     differences++;
                 }
-        mb8_storage_log("[NAND DEBUG] raw page=%u pass=%u mode=%s rc=%d status-valid=%u C0=%02x first-byte=%02x fnv=%08x diff-vs-pass1=%u first-diff=%d\r\n",
-            (unsigned)page, i + 1, serial ? "serial03-PIO12" : "quad6B-DMA48+tags",
+        if (differences) mismatch = true;
+        mb8_storage_log("[NAND DEBUG] raw page=%u pass=%u mode=%s target-clock=%u rc=%d status-valid=%u C0=%02x first-byte=%02x fnv=%08x diff-vs-pass1=%u first-diff=%d\r\n",
+            (unsigned)page, i + 1, serial ? "serial03-PIO12" : "quad6B-DMA+tags",
+            serial ? 12000000u : (unsigned)mb8_nand_board.clock_hz,
             r, (unsigned)nand.operation.status_valid, (unsigned)nand.operation.status,
             (unsigned)dest[0], (unsigned)debug_hash(dest, DS35_PAGE), differences,
             first == DS35_PAGE ? -1 : (int)first);
     }
+    return mismatch ? DS35_IO : DS35_OK;
 }
 #endif
 
