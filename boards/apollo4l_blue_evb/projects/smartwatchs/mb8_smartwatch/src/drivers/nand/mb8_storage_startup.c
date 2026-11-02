@@ -9,17 +9,11 @@
 #include "task.h"
 #include "mb8_storage_log.h"
 #include "watch_gpu.h"
-#if WATCH_NAND_WRITE_TRACE
-#include "am_mcu_apollo.h"
-#endif
 #if WATCH_NAND_STARTUP_TESTS
 #include "mb8_storage_startup_tests.h"
 #endif
 
 static TaskHandle_t worker;
-#if WATCH_NAND_WRITE_TRACE
-volatile uint32_t mb8_write_trace_token;
-#endif
 
 static void print_size(const char *label, uint64_t bytes)
 {
@@ -237,10 +231,7 @@ static void startup_worker(void *unused)
     while (!watch_gpu_ready)
         vTaskDelay(pdMS_TO_TICKS(10));
 #if WATCH_NAND_WRITE_TRACE
-    mb8_storage_log("[NAND WRITE] READY: debugger token required; reset disarms; no full format.\r\n");
-    while (mb8_write_trace_token != 0x6d385754u) vTaskDelay(pdMS_TO_TICKS(100));
-    mb8_write_trace_token = 0;
-    __DMB();
+    mb8_storage_log("[NAND WRITE] automatic test enabled; no full format; don't reset while running.\r\n");
     mb8_storage_write_trace();
     for (;;) vTaskSuspend(NULL);
 #elif WATCH_NAND_DEBUG_REPRO

@@ -15,7 +15,7 @@ WATCH_NAND_MSPI_QUAD ?= 1
 WATCH_NAND_STARTUP_TESTS ?= 1
 WATCH_NAND_TEST_WRITE ?= 0
 WATCH_NAND_FULL_FORMAT ?= 0
-# Temporary debugger-armed write-path diagnostic; never formats.
+# Temporary automatic write-path diagnostic; never formats.
 WATCH_NAND_WRITE_TRACE ?= 0
 ifneq ($(filter $(WATCH_NAND_WRITE_TRACE),0 1),$(WATCH_NAND_WRITE_TRACE))
 $(error WATCH_NAND_WRITE_TRACE must be 0 or 1)

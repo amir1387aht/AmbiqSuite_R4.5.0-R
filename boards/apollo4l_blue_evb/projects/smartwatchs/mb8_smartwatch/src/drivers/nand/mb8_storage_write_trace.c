@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only
- * Temporary debugger-armed write diagnostic, not production provisioning. */
+ * Temporary automatic write diagnostic, not production provisioning. */
 #include "mb8_nand_board.h"
 #if WATCH_NAND_WRITE_TRACE
 #include "mb8_storage.h"
@@ -10,7 +10,8 @@
 #include <errno.h>
 
 static const char original[] = "/nand/format-check/known-pattern.bin";
-static const char test[] = "/nand/write-trace-12.bin";
+static const char previous_test[] = "/nand/write-trace-12.bin";
+static const char test[] = "/nand/wtrace12b";
 static uint8_t buf[2048];
 static uint8_t pattern(unsigned offset)
 {
@@ -23,7 +24,7 @@ void mb8_storage_write_trace(void)
     int fd = -1, rc;
     const char *phase = "RO preflight";
     struct yaffs_stat st;
-    mb8_storage_log("[NAND WRITE] one-shot start: 12MHz, new file only; no full format. Old checkpoint may be erased.\r\n");
+    mb8_storage_log("[NAND WRITE] automatic test: 12MHz, new file only; no full format. Old checkpoint may be erased.\r\n");
     if (mb8_storage_mount(true) < 0) goto done;
     mounted = true;
     yaffsfs_SetError(0);
@@ -43,10 +44,43 @@ void mb8_storage_write_trace(void)
     rc = yaffs_close(fd); fd = -1;
     if (rc < 0) goto done;
     mb8_storage_log("[NAND WRITE] preflight original page=46 byte=9c; first page matches.\r\n");
+    phase = "inspect previous test";
+    yaffsfs_SetError(0);
+    rc = yaffs_lstat(previous_test, &st);
+    int prior_error = yaffs_get_error();
+    mb8_storage_log("[NAND WRITE] previous-test stat rc=%d errno=%d length=%lld read-error=%u\r\n",
+        rc, prior_error, rc == 0 ? (long long)st.st_size : -1LL, (unsigned)mb8_storage_debug_failed());
+    if (mb8_storage_debug_failed() || (rc < 0 && prior_error != -ENOENT)) goto done;
+    if (rc == 0 && st.st_size == 2049) {
+        fd = yaffs_open(previous_test, O_RDONLY, 0);
+        if (fd < 0 || mb8_storage_debug_failed()) goto done;
+        bool prior_match = true;
+        for (unsigned offset=0; offset<2049; offset+=sizeof(buf)) {
+            unsigned n = 2049-offset < sizeof(buf) ? 2049-offset : sizeof(buf);
+            yaffsfs_SetError(0);
+            rc = yaffs_read(fd, buf, n);
+            mb8_storage_log("[NAND WRITE] previous-test read offset=%u requested=%u rc=%d errno=%d read-error=%u\r\n",
+                offset, n, rc, yaffs_get_error(), (unsigned)mb8_storage_debug_failed());
+            if (rc != (int)n || mb8_storage_debug_failed()) goto done;
+            for (unsigned i=0; i<n; i++) if (buf[i] != pattern(offset+i)) {
+                mb8_storage_log("[NAND WRITE] previous-test mismatch offset=%u expected=%02x actual=%02x\r\n",
+                    offset+i, (unsigned)pattern(offset+i), (unsigned)buf[i]);
+                prior_match = false;
+                break;
+            }
+            if (!prior_match) break;
+        }
+        mb8_storage_log("[NAND WRITE] previous-test pattern=%s\r\n", prior_match ? "matches" : "mismatch");
+        rc = yaffs_close(fd); fd = -1;
+        if (rc < 0) goto done;
+    }
     phase = "check exclusive test path";
     yaffsfs_SetError(0);
     rc = yaffs_lstat(test, &st);
-    if (rc == 0 || yaffs_get_error() != -ENOENT || mb8_storage_debug_failed()) {
+    int test_error = yaffs_get_error();
+    mb8_storage_log("[NAND WRITE] new-test stat rc=%d errno=%d length=%lld read-error=%u\r\n",
+        rc, test_error, rc == 0 ? (long long)st.st_size : -1LL, (unsigned)mb8_storage_debug_failed());
+    if (rc == 0 || test_error != -ENOENT || mb8_storage_debug_failed()) {
         phase = "test file already exists or preflight failed; will not overwrite"; goto done;
     }
     if (mb8_storage_unmount() < 0) { mounted = false; phase = "RO shutdown failed"; goto done; }
@@ -100,7 +134,7 @@ void mb8_storage_write_trace(void)
     ok=true;
 done:
     mb8_storage_debug_trace(false);
-    mb8_storage_log("[NAND WRITE] RESULT=%s phase=%s status=%s errno=%d; test file retained if created; no auto rearm.\r\n",ok?"PASS":"FAIL",phase,mb8_storage_status(),yaffs_get_error());
+    mb8_storage_log("[NAND WRITE] RESULT=%s phase=%s status=%s errno=%d; test file retained if created.\r\n",ok?"PASS":"FAIL",phase,mb8_storage_status(),yaffs_get_error());
     if (!ok && writable) mb8_storage_write_trace_abort();
     if (fd >= 0) { rc=yaffs_close(fd); mb8_storage_log("[NAND WRITE] cleanup close rc=%d\r\n",rc); }
     if (mounted) { rc=mb8_storage_unmount(); mb8_storage_log("[NAND WRITE] cleanup unmount rc=%d status=%s\r\n",rc,mb8_storage_status()); }
