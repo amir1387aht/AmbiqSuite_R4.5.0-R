@@ -296,7 +296,7 @@ int ds35_read(struct ds35_nand *n, uint32_t page, void *data, size_t bytes, void
     return ecc;
 }
 
-#if WATCH_NAND_STARTUP_TESTS || WATCH_NAND_FULL_FORMAT
+#if WATCH_NAND_STARTUP_TESTS || WATCH_NAND_FULL_FORMAT || WATCH_NAND_DEBUG_REPRO
 int ds35_read_x1_reference(struct ds35_nand *n, uint32_t page, void *data, size_t bytes)
 {
     if (!n)

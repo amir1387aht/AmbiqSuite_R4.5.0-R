@@ -70,7 +70,7 @@ int mb8_nand_mspi_plan(const uint8_t *h,
             p->address_bytes = 3;
             p->address       = ((uint32_t)h[2] << 8) | h[3];
             break;
-#if WATCH_NAND_STARTUP_TESTS || WATCH_NAND_FULL_FORMAT
+#if WATCH_NAND_STARTUP_TESTS || WATCH_NAND_FULL_FORMAT || WATCH_NAND_DEBUG_REPRO
         case 0x03:
         {
             if (hn != 4 || width != 1 || !rx || !len || len > 256 || (h[1] & 0xf0) || h[3])

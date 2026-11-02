@@ -73,6 +73,7 @@ void mb8_storage_debug_repro(void)
             {
                 mb8_storage_log("[NAND DEBUG] DATA MISMATCH offset=%u expected=%02x actual=%02x\r\n",
                     offsets[k] + i, (unsigned)expected(offsets[k] + i), (unsigned)buffer[i]);
+                mb8_storage_debug_compare_last_page();
                 clean = false;
                 break;
             }

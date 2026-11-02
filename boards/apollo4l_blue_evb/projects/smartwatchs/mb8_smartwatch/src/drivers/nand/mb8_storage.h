@@ -29,6 +29,7 @@ struct mb8_storage_usage
 #if WATCH_NAND_DEBUG_REPRO
 void mb8_storage_debug_trace(bool enable);
 bool mb8_storage_debug_failed(void);
+void mb8_storage_debug_compare_last_page(void);
 void mb8_storage_debug_repro(void);
 #endif
 struct ds35_nand;

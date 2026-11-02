@@ -22,8 +22,13 @@
 static struct ds35_nand  nand __attribute__((section(".shared.nand"), aligned(32)));
 static struct yaffs_dev  dev;
 #if WATCH_NAND_DEBUG_REPRO
-static bool debug_trace;
-void mb8_storage_debug_trace(bool enable) { debug_trace = enable; }
+static bool debug_trace, debug_page_valid;
+static uint32_t debug_page;
+void mb8_storage_debug_trace(bool enable)
+{
+    debug_trace = enable;
+    if (enable) debug_page_valid = false;
+}
 
 #endif
 static SemaphoreHandle_t mutex;
@@ -205,6 +210,10 @@ static int read_chunk(
     *ecc  = YAFFS_ECC_RESULT_UNFIXED;
     int r = ds35_read(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
 #if WATCH_NAND_DEBUG_REPRO
+    if (debug_trace && data && r >= 0) {
+        debug_page = (uint32_t)page;
+        debug_page_valid = true;
+    }
     if (debug_trace)
         mb8_storage_log("[NAND DEBUG] chunk page=%d data=%u bytes=%d tags=%d rc=%d status-valid=%u C0=%02x data-fnv=%08x tags-fnv=%08x phase=%s\r\n",
             page, data != NULL, bytes, on, r, (unsigned)nand.operation.status_valid,
@@ -474,6 +483,50 @@ int mb8_storage_read_sample(uint32_t relative_page, void *data, size_t bytes)
         return r;
     return ds35_read(&nand, page, data, bytes, NULL, 0);
 }
+
+#if WATCH_NAND_DEBUG_REPRO
+void mb8_storage_debug_compare_last_page(void)
+{
+    static uint8_t baseline[DS35_PAGE], sample[DS35_PAGE];
+    uint8_t tags[28];
+    if (!claim_worker() || !dev.is_mounted || !dev.read_only ||
+        nand.writable || scan_error || !debug_page_valid)
+    {
+        mb8_storage_log("[NAND DEBUG] raw comparison unavailable (state/page/read error).\r\n");
+        return;
+    }
+    uint32_t page = debug_page;
+    for (unsigned i = 0; i < 4; i++)
+    {
+        bool serial = (i & 1u) != 0;
+        uint8_t *dest = i ? sample : baseline;
+        int r = serial ? ds35_read_x1_reference(&nand, page, dest, DS35_PAGE)
+                       : ds35_read(&nand, page, dest, DS35_PAGE, tags, sizeof(tags));
+        if (r < 0)
+        {
+            scan_error = true;
+            const struct mb8_nand_diagnostic *b = mb8_nand_bus_diagnostic();
+            mb8_storage_log("[NAND DEBUG] raw page=%u pass=%u mode=%s FAIL rc=%d phase=%s bus=%d stage=%s HAL-valid=%u HAL=%u\r\n",
+                (unsigned)page, i + 1, serial ? "serial03-PIO12" : "quad6B-DMA48+tags",
+                r, nand.operation.phase ? nand.operation.phase : "none", b->result,
+                b->stage ? b->stage : "none", (unsigned)b->hal_valid, (unsigned)b->hal_status);
+            return;
+        }
+        unsigned differences = 0, first = DS35_PAGE;
+        if (i)
+            for (unsigned j = 0; j < DS35_PAGE; j++)
+                if (dest[j] != baseline[j]) {
+                    if (!differences) first = j;
+                    differences++;
+                }
+        mb8_storage_log("[NAND DEBUG] raw page=%u pass=%u mode=%s rc=%d status-valid=%u C0=%02x first-byte=%02x fnv=%08x diff-vs-pass1=%u first-diff=%d\r\n",
+            (unsigned)page, i + 1, serial ? "serial03-PIO12" : "quad6B-DMA48+tags",
+            r, (unsigned)nand.operation.status_valid, (unsigned)nand.operation.status,
+            (unsigned)dest[0], (unsigned)debug_hash(dest, DS35_PAGE), differences,
+            first == DS35_PAGE ? -1 : (int)first);
+    }
+}
+#endif
 
 #if WATCH_NAND_STARTUP_TESTS
 static struct mb8_storage_raw_diagnostic raw_diagnostic;
