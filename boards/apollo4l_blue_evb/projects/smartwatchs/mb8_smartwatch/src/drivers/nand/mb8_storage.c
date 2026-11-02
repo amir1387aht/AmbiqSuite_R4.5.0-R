@@ -11,6 +11,7 @@
 #include "yaffsfs.h"
 #include "yaffs_packedtags2.h"
 #include "yaffs_getblockinfo.h"
+#include "yaffs_bitmap.h"
 #include "am_mcu_apollo.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -30,6 +31,9 @@ void mb8_storage_debug_trace(bool enable)
     if (enable) debug_page_valid = false;
 }
 
+#endif
+#if WATCH_NAND_WRITE_TRACE
+static bool trace_reclaim_enabled;
 #endif
 static SemaphoreHandle_t mutex;
 static TaskHandle_t      owner;
@@ -310,15 +314,27 @@ static int erase_block(struct yaffs_dev *d, int block)
 {
 #if WATCH_NAND_WRITE_TRACE
     int internal = block + d->block_offset;
-    if (d->read_only || scan_error || !nand.writable || block < 1 ||
-        internal < (int)d->internal_start_block || internal > (int)d->internal_end_block ||
-        yaffs_get_block_info(d, internal)->block_state != YAFFS_BLOCK_STATE_CHECKPOINT) {
+    bool checkpoint = false, reclaim = false;
+    unsigned state = 0, pages = 0, bits = 0, retiring = 0;
+    if (block >= 1 && internal >= (int)d->internal_start_block &&
+        internal <= (int)d->internal_end_block) {
+        struct yaffs_block_info *bi = yaffs_get_block_info(d, internal);
+        state = bi->block_state; pages = bi->pages_in_use; retiring = bi->needs_retiring;
+        checkpoint = state == YAFFS_BLOCK_STATE_CHECKPOINT;
+        if (trace_reclaim_enabled && state == YAFFS_BLOCK_STATE_DIRTY) {
+            bits = (unsigned)yaffs_count_chunk_bits(d, internal);
+            reclaim = !retiring && pages == 0 && bits == 0;
+        }
+    }
+    if (d->read_only || scan_error || !nand.writable || !(checkpoint || reclaim)) {
         scan_error = true; nand.writable = false;
-        mb8_storage_log("[NAND WRITE] refused non-checkpoint/block0 erase block=%d\r\n", block);
+        mb8_storage_log("[NAND WRITE] refused erase block=%d state=%u pages=%u bits=%u retiring=%u reclaim-window=%u\r\n",
+            block, state, pages, bits, retiring, (unsigned)trace_reclaim_enabled);
         return YAFFS_FAIL;
     }
     int result = ds35_erase(&nand, (uint32_t)block);
-    mb8_storage_log("[NAND WRITE] invalidate old checkpoint block=%d rc=%d\r\n", block, result);
+    mb8_storage_log("[NAND WRITE] erase block=%d reason=%s state=%u pages=%u bits=%u rc=%d\r\n",
+        block, checkpoint ? "checkpoint" : "empty YAFFS dirty block", state, pages, bits, result);
     if (result != DS35_OK) { scan_error = true; nand.writable = false; return YAFFS_FAIL; }
     return YAFFS_OK;
 #elif WATCH_NAND_DEBUG_REPRO
@@ -1244,9 +1260,15 @@ int mb8_storage_mount(bool read_only)
 }
 
 #if WATCH_NAND_WRITE_TRACE
+void mb8_storage_trace_reclaim(bool enable)
+{
+    /* Only the controlled delete step opens this window. */
+    trace_reclaim_enabled = enable && dev.is_mounted && !dev.read_only && nand.writable && !scan_error;
+}
 void mb8_storage_write_trace_abort(void)
 {
     /* Prevent further array mutations during forced cleanup after any failure. */
+    trace_reclaim_enabled = false;
     scan_error = true;
     nand.writable = false;
     dev.read_only = 1;

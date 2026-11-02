@@ -11,9 +11,10 @@
 
 static const char original[] = "/nand/format-check/known-pattern.bin";
 #if WATCH_NAND_TRACE_CLOCK == 48000000
-static const char previous_test[] = "/nand/wtrace12b";
-static const char test[] = "/nand/wtracefix";
-static const char bulk[] = "/nand/wfixbulk";
+static const char previous_test[] = "/nand/wtracefix";
+static const char test[] = "/nand/wfix2";
+static const char bulk[] = "/nand/wbulk2";
+static const char earlier_bulk[] = "/nand/wfixbulk";
 #else
 static const char previous_test[] = "/nand/write-trace-12.bin";
 static const char test[] = "/nand/wtrace12b";
@@ -30,7 +31,7 @@ void mb8_storage_write_trace(void)
     int fd = -1, rc;
     const char *phase = "RO preflight";
     struct yaffs_stat st;
-    mb8_storage_log("[NAND WRITE] automatic test: read-target=%uHz, program-load <=12MHz; creates test files and deletes bulk file. No full format. Old checkpoint may be erased.\r\n",
+    mb8_storage_log("[NAND WRITE] automatic test: read-target=%uHz, program-load <=12MHz; creates test files and deletes bulk file. No full format. YAFFS may erase old checkpoint and empty dirty blocks during deletion.\r\n",
         (unsigned)WATCH_NAND_TRACE_CLOCK);
     if (mb8_storage_mount(true) < 0) goto done;
     mounted = true;
@@ -66,7 +67,7 @@ void mb8_storage_write_trace(void)
     if (mb8_storage_debug_failed() || (rc < 0 && prior_error != -ENOENT)) goto done;
 #if WATCH_NAND_TRACE_CLOCK == 48000000
     if (rc != 0 || st.st_size != 2049) {
-        phase = "12MHz baseline file missing or wrong size; no 48MHz writes"; goto done;
+        phase = "previous mixed-speed file missing or wrong size; no writes"; goto done;
     }
 #endif
     if (rc == 0 && st.st_size == 2049) {
@@ -92,9 +93,18 @@ void mb8_storage_write_trace(void)
         rc = yaffs_close(fd); fd = -1;
         if (rc < 0) goto done;
 #if WATCH_NAND_TRACE_CLOCK == 48000000
-        if (!prior_match) { phase = "12MHz baseline mismatch; no 48MHz writes"; goto done; }
+        if (!prior_match) { phase = "previous mixed-speed file mismatch; no writes"; goto done; }
 #endif
     }
+#if WATCH_NAND_TRACE_CLOCK == 48000000
+    phase = "inspect previous delete target";
+    yaffsfs_SetError(0);
+    rc = yaffs_lstat(earlier_bulk, &st);
+    int earlier_err = yaffs_get_error();
+    mb8_storage_log("[NAND WRITE] previous bulk stat rc=%d errno=%d length=%lld; not explicitly deleted\r\n",
+        rc, earlier_err, rc == 0 ? (long long)st.st_size : -1LL);
+    if (mb8_storage_debug_failed() || (rc < 0 && earlier_err != -ENOENT)) goto done;
+#endif
     phase = "check exclusive test path";
     yaffsfs_SetError(0);
     rc = yaffs_lstat(test, &st);
@@ -213,8 +223,12 @@ void mb8_storage_write_trace(void)
     if (mb8_storage_mount(false) < 0) goto done;
     mounted=writable=true;
     phase = "delete bulk test only";
-    rc=yaffs_unlink(bulk); if (rc < 0 || mb8_storage_debug_failed()) goto done;
-    rc=yaffs_sync("/nand"); if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    mb8_storage_trace_reclaim(true);
+    rc=yaffs_unlink(bulk);
+    if (rc < 0 || mb8_storage_debug_failed()) { mb8_storage_trace_reclaim(false); goto done; }
+    rc=yaffs_sync("/nand");
+    mb8_storage_trace_reclaim(false);
+    if (rc < 0 || mb8_storage_debug_failed()) goto done;
     phase = "delete RW unmount";
     rc=mb8_storage_unmount(); if (rc < 0) goto done; mounted=writable=false;
     phase = "delete RO remount";
@@ -224,11 +238,30 @@ void mb8_storage_write_trace(void)
     yaffsfs_SetError(0); rc=yaffs_lstat(bulk,&st);
     if (rc == 0 || yaffs_get_error() != -ENOENT || mb8_storage_debug_failed()) goto done;
     mb8_storage_log("[NAND WRITE] bulk delete warm-remount PASS\r\n");
+    phase = "verify retained files after delete";
+    const char *retained[] = {previous_test, test};
+    for (unsigned k=0; k<2; k++) {
+        fd=yaffs_open(retained[k],O_RDONLY,0);
+        if (fd < 0 || mb8_storage_debug_failed()) goto done;
+        for (unsigned offset=0; offset<2049; offset+=sizeof(buf)) {
+            unsigned n = 2049-offset < sizeof(buf) ? 2049-offset : sizeof(buf);
+            rc=yaffs_read(fd,buf,n);
+            if (rc != (int)n || mb8_storage_debug_failed()) goto done;
+            for (unsigned i=0; i<n; i++) if (buf[i] != pattern(offset+i)) {
+                mb8_storage_log("[NAND WRITE] retained-file mismatch file=%s offset=%u\r\n",retained[k],offset+i);
+                goto done;
+            }
+        }
+        rc=yaffs_read(fd,buf,1); if (rc != 0 || mb8_storage_debug_failed()) goto done;
+        rc=yaffs_close(fd); fd=-1; if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    }
+    mb8_storage_log("[NAND WRITE] retained files after delete PASS\r\n");
 #endif
     phase = "final RO unmount";
     rc=mb8_storage_unmount(); if (rc < 0) goto done; mounted=false;
     ok=true;
 done:
+    mb8_storage_trace_reclaim(false);
     mb8_storage_debug_trace(false);
     mb8_storage_log("[NAND WRITE] RESULT=%s phase=%s status=%s errno=%d; test file retained if created.\r\n",ok?"PASS":"FAIL",phase,mb8_storage_status(),yaffs_get_error());
     if (!ok && writable) mb8_storage_write_trace_abort();

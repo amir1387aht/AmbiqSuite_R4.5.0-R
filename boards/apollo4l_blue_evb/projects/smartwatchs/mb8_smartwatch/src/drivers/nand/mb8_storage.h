@@ -36,6 +36,7 @@ void mb8_storage_debug_repro(void);
 #if WATCH_NAND_WRITE_TRACE
 void mb8_storage_write_trace(void);
 void mb8_storage_write_trace_abort(void);
+void mb8_storage_trace_reclaim(bool enable);
 #endif
 #endif
 struct ds35_nand;
