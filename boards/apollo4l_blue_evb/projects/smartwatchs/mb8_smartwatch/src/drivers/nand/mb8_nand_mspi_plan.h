@@ -21,6 +21,8 @@ int mb8_nand_mspi_plan(const uint8_t *,
     unsigned,
     bool,
     struct mb8_nand_mspi_plan *);
+/* Keep program load at 12 MHz until fast writes have been validated. */
+uint32_t mb8_nand_mspi_data_divider(const struct mb8_nand_mspi_plan *plan, uint32_t target_divider);
 /* Current E5 A1/1.8V chip ONLY. Never generalize a 133MHz claim to this part. */
 int mb8_nand_mspi_clock_select(uint32_t hz, uint32_t *divider);
 #endif

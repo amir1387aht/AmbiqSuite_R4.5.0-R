@@ -262,9 +262,9 @@ static int write_chunk(
             mb8_storage_log("[NAND WRITE] blank-check failed page=%d user-OOB-offset=%u\r\n", page, i + 4);
             scan_error = true; nand.writable = false; return YAFFS_FAIL;
         }
-    mb8_storage_log("[NAND WRITE] page=%d input0=%02x input-fnv=%08x tags-fnv=%08x target-clock=%u\r\n",
+    mb8_storage_log("[NAND WRITE] page=%d input0=%02x input-fnv=%08x tags-fnv=%08x read-target=%u program-target=%u\r\n",
         page, (unsigned)data[0], (unsigned)debug_hash(data, (unsigned)bytes), (unsigned)debug_hash(oob, (unsigned)on),
-        (unsigned)mb8_nand_board.clock_hz);
+        (unsigned)mb8_nand_board.clock_hz, (unsigned)(mb8_nand_board.clock_hz < 12000000u ? mb8_nand_board.clock_hz : 12000000u));
     int result = ds35_program(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
     if (result < 0) { scan_error = true; nand.writable = false;
         mb8_storage_log("[NAND WRITE] PROGRAM FAIL page=%d rc=%d phase=%s status-valid=%u C0=%02x\r\n",
@@ -541,17 +541,16 @@ int mb8_storage_read_sample(uint32_t relative_page, void *data, size_t bytes)
 }
 
 #if WATCH_NAND_DEBUG_REPRO
-int mb8_storage_debug_compare_last_page(void)
+int mb8_storage_debug_compare_page(uint32_t page)
 {
     static uint8_t baseline[DS35_PAGE], sample[DS35_PAGE];
     uint8_t tags[28];
     if (!claim_worker() || !dev.is_mounted || !dev.read_only ||
-        nand.writable || scan_error || !debug_page_valid)
+        nand.writable || scan_error || page >= DS35_BLOCKS * DS35_PAGES_PER_BLOCK)
     {
         mb8_storage_log("[NAND DEBUG] raw comparison unavailable (state/page/read error).\r\n");
         return DS35_EINVAL;
     }
-    uint32_t page = debug_page;
     bool mismatch = false;
     for (unsigned i = 0; i < 4; i++)
     {
@@ -585,6 +584,11 @@ int mb8_storage_debug_compare_last_page(void)
             first == DS35_PAGE ? -1 : (int)first);
     }
     return mismatch ? DS35_IO : DS35_OK;
+}
+
+int mb8_storage_debug_compare_last_page(void)
+{
+    return mb8_storage_debug_compare_page(debug_page_valid ? debug_page : UINT32_MAX);
 }
 #endif
 

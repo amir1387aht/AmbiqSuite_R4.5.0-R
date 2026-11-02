@@ -290,7 +290,11 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
         abort_controller();
         return DS35_IO;
     }
-    uint32_t data_divider = target_divider;
+    /* The watch 48 MHz program/readback test returned a wrong first byte.
+     * Limit 0x32 only; keep reads at the requested clock. Do not increase
+     * a target slower than 12 MHz. This is a conservative workaround, not
+     * a claim about the underlying electrical/controller cause. */
+    uint32_t data_divider = mb8_nand_mspi_data_divider(p, target_divider);
 #if WATCH_NAND_FULL_FORMAT
     /* Mode3 persists for the complete format/write/remount session. Only the
      * explicitly requested read-only48MHz diagnostic can raise it. */
@@ -338,8 +342,8 @@ static int transfer(void *ctx,
         memcpy(bounce, tx, len);
 #if WATCH_NAND_WRITE_TRACE
     if (p.opcode == 0x32 && tx && len)
-        mb8_storage_log("[NAND WRITE] DMA buffer input0=%02x bounce0=%02x length=%u\r\n",
-            (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len);
+        mb8_storage_log("[NAND WRITE] DMA buffer input0=%02x bounce0=%02x length=%u active-clock=%u\r\n",
+            (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len, (unsigned)(96000000u / current_divider));
 #endif
     uint32_t status;
     if (!p.dma)

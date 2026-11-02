@@ -26,6 +26,12 @@ int mb8_nand_mspi_clock_select(uint32_t hz, uint32_t *divider)
     }
 }
 
+/* Dividers are 96 MHz / desired clock. Never speed up a slower target. */
+uint32_t mb8_nand_mspi_data_divider(const struct mb8_nand_mspi_plan *p, uint32_t target)
+{
+    return p && p->dma && p->opcode == 0x32 && target < 8u ? 8u : target;
+}
+
 int mb8_nand_mspi_plan(const uint8_t *h,
     size_t                            hn,
     const uint8_t                    *tx,

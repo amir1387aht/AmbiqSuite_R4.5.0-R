@@ -12,7 +12,8 @@
 static const char original[] = "/nand/format-check/known-pattern.bin";
 #if WATCH_NAND_TRACE_CLOCK == 48000000
 static const char previous_test[] = "/nand/wtrace12b";
-static const char test[] = "/nand/wtrace48";
+static const char test[] = "/nand/wtracefix";
+static const char bulk[] = "/nand/wfixbulk";
 #else
 static const char previous_test[] = "/nand/write-trace-12.bin";
 static const char test[] = "/nand/wtrace12b";
@@ -29,10 +30,16 @@ void mb8_storage_write_trace(void)
     int fd = -1, rc;
     const char *phase = "RO preflight";
     struct yaffs_stat st;
-    mb8_storage_log("[NAND WRITE] automatic test: target=%uHz, new file only; no full format. Old checkpoint may be erased.\r\n",
+    mb8_storage_log("[NAND WRITE] automatic test: read-target=%uHz, program-load <=12MHz; creates test files and deletes bulk file. No full format. Old checkpoint may be erased.\r\n",
         (unsigned)WATCH_NAND_TRACE_CLOCK);
     if (mb8_storage_mount(true) < 0) goto done;
     mounted = true;
+#if WATCH_NAND_TRACE_CLOCK == 48000000
+    phase = "read-only cross-check of failed page 131";
+    rc = mb8_storage_debug_compare_page(131u);
+    mb8_storage_log("[NAND WRITE] prior failed page 131 serial/quad rc=%d\r\n", rc);
+    if (rc < 0 || mb8_storage_debug_failed()) goto done;
+#endif
     yaffsfs_SetError(0);
     rc = yaffs_lstat(original, &st);
     if (rc < 0 || st.st_size != 2049 || mb8_storage_debug_failed()) goto done;
@@ -97,7 +104,14 @@ void mb8_storage_write_trace(void)
     if (rc == 0 || test_error != -ENOENT || mb8_storage_debug_failed()) {
         phase = "test file already exists or preflight failed; will not overwrite"; goto done;
     }
-    if (mb8_storage_unmount() < 0) { mounted = false; phase = "RO shutdown failed"; goto done; }
+#if WATCH_NAND_TRACE_CLOCK == 48000000
+    yaffsfs_SetError(0);
+    rc = yaffs_lstat(bulk, &st);
+    if (rc == 0 || yaffs_get_error() != -ENOENT || mb8_storage_debug_failed()) {
+        phase = "bulk test already exists or preflight failed; will not overwrite"; goto done;
+    }
+#endif
+    if (mb8_storage_unmount() < 0) { phase = "RO shutdown failed"; goto done; }
     mounted = false;
     phase = "RW mount";
     if (mb8_storage_mount(false) < 0) goto done;
@@ -123,8 +137,9 @@ void mb8_storage_write_trace(void)
     rc = yaffs_close(fd); fd = -1;
     if (rc < 0 || mb8_storage_debug_failed()) goto done;
     phase = "RW unmount";
-    rc = mb8_storage_unmount(); mounted = writable = false;
+    rc = mb8_storage_unmount();
     if (rc < 0) goto done;
+    mounted = writable = false;
     phase = "RO remount";
     if (mb8_storage_mount(true) < 0) goto done;
     mounted = true;
@@ -156,8 +171,62 @@ void mb8_storage_write_trace(void)
     rc=yaffs_read(fd,buf,1); if (rc != 0 || mb8_storage_debug_failed()) goto done;
     phase = "final RO close";
     rc=yaffs_close(fd); fd=-1; if (rc < 0) goto done;
+#if WATCH_NAND_TRACE_CLOCK == 48000000
+    /* Exercise a multi-page file and a delete, without touching existing
+     * files. Each actual page program still has full data/tag verification. */
+    phase = "RO unmount before bulk test";
+    rc = mb8_storage_unmount(); if (rc < 0) goto done; mounted = false;
+    phase = "bulk RW mount";
+    if (mb8_storage_mount(false) < 0) goto done;
+    mounted = writable = true;
+    phase = "bulk exclusive create";
+    fd = yaffs_open(bulk, O_CREAT | O_EXCL | O_RDWR, 0600);
+    if (fd < 0 || mb8_storage_debug_failed()) goto done;
+    phase = "bulk write 65536 bytes";
+    for (unsigned offset=0; offset<65536; offset+=sizeof(buf)) {
+        for (unsigned i=0; i<sizeof(buf); i++) buf[i]=pattern(offset+i);
+        rc = yaffs_write(fd, buf, sizeof(buf));
+        if (rc != (int)sizeof(buf) || mb8_storage_debug_failed()) goto done;
+    }
+    rc=yaffs_fsync(fd); if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    rc=yaffs_close(fd); fd=-1; if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    phase = "bulk RW unmount";
+    rc=mb8_storage_unmount(); if (rc < 0) goto done; mounted=writable=false;
+    phase = "bulk RO remount";
+    if (mb8_storage_mount(true) < 0) goto done;
+    mounted=true;
+    phase = "bulk read verify";
+    fd=yaffs_open(bulk,O_RDONLY,0); if (fd < 0 || mb8_storage_debug_failed()) goto done;
+    for (unsigned offset=0; offset<65536; offset+=sizeof(buf)) {
+        rc=yaffs_read(fd,buf,sizeof(buf));
+        if (rc != (int)sizeof(buf) || mb8_storage_debug_failed()) goto done;
+        for (unsigned i=0; i<sizeof(buf); i++) if (buf[i] != pattern(offset+i)) {
+            mb8_storage_log("[NAND WRITE] bulk mismatch offset=%u expected=%02x actual=%02x\r\n",offset+i,(unsigned)pattern(offset+i),(unsigned)buf[i]); goto done;
+        }
+    }
+    rc=yaffs_read(fd,buf,1); if (rc != 0 || mb8_storage_debug_failed()) goto done;
+    rc=yaffs_close(fd); fd=-1; if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    mb8_storage_log("[NAND WRITE] bulk 65536-byte warm-remount readback PASS\r\n");
+    phase = "RO unmount before delete";
+    rc=mb8_storage_unmount(); if (rc < 0) goto done; mounted=false;
+    phase = "delete RW mount";
+    if (mb8_storage_mount(false) < 0) goto done;
+    mounted=writable=true;
+    phase = "delete bulk test only";
+    rc=yaffs_unlink(bulk); if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    rc=yaffs_sync("/nand"); if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    phase = "delete RW unmount";
+    rc=mb8_storage_unmount(); if (rc < 0) goto done; mounted=writable=false;
+    phase = "delete RO remount";
+    if (mb8_storage_mount(true) < 0) goto done;
+    mounted=true;
+    phase = "verify bulk deleted";
+    yaffsfs_SetError(0); rc=yaffs_lstat(bulk,&st);
+    if (rc == 0 || yaffs_get_error() != -ENOENT || mb8_storage_debug_failed()) goto done;
+    mb8_storage_log("[NAND WRITE] bulk delete warm-remount PASS\r\n");
+#endif
     phase = "final RO unmount";
-    rc=mb8_storage_unmount(); mounted=false; if (rc < 0) goto done;
+    rc=mb8_storage_unmount(); if (rc < 0) goto done; mounted=false;
     ok=true;
 done:
     mb8_storage_debug_trace(false);
