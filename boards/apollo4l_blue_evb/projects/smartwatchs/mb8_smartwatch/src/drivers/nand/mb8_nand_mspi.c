@@ -295,6 +295,12 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
      * a target slower than 12 MHz. This is a conservative workaround, not
      * a claim about the underlying electrical/controller cause. */
     uint32_t data_divider = mb8_nand_mspi_data_divider(p, target_divider);
+#if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
+    /* Isolated experiment: 48 MHz program load with alternate transmit edge.
+     * Ordinary builds retain the 12 MHz program-load cap. */
+    if (p->dma && p->opcode == 0x32)
+        data_divider = target_divider;
+#endif
 #if WATCH_NAND_FULL_FORMAT
     /* Mode3 persists for the complete format/write/remount session. Only the
      * explicitly requested read-only48MHz diagnostic can raise it. */
@@ -306,6 +312,20 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
     /* The plan permits 6B reads only with quad DMA. Serial03 remains HAL timing. */
     if (select_receive_timing(p->opcode == 0x6b && p->receive) < 0)
         return DS35_IO;
+#if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
+    /* CLOCK_CONFIG resets edge bits. Apply after it on every phase and restore
+     * TXNEG=0 before serial commands and quad reads, even at the same clock. */
+    const uint32_t txneg = (p->dma && p->opcode == 0x32) ? 1u : 0u;
+    MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0 = txneg;
+    __DSB();
+    if (MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0 != txneg ||
+        (txneg && current_divider != AM_HAL_MSPI_CLK_48MHZ))
+    {
+        mb8_nand_diag_fail(DS35_IO, "TX48-timing-readback", "clock or TXNEG did not latch");
+        abort_controller();
+        return DS35_IO;
+    }
+#endif
     return DS35_OK;
 }
 
@@ -342,8 +362,9 @@ static int transfer(void *ctx,
         memcpy(bounce, tx, len);
 #if WATCH_NAND_WRITE_TRACE
     if (p.opcode == 0x32 && tx && len)
-        mb8_storage_log("[NAND WRITE] DMA buffer input0=%02x bounce0=%02x length=%u active-clock=%u\r\n",
-            (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len, (unsigned)(96000000u / current_divider));
+        mb8_storage_log("[NAND WRITE] DMA buffer input0=%02x bounce0=%02x length=%u active-clock=%u TXNEG=%u\r\n",
+            (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len, (unsigned)(96000000u / current_divider),
+            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0);
 #endif
     uint32_t status;
     if (!p.dma)

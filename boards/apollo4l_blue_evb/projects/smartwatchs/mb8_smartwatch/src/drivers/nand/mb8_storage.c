@@ -265,7 +265,12 @@ static int write_chunk(
         }
     mb8_storage_log("[NAND WRITE] page=%d input0=%02x input-fnv=%08x tags-fnv=%08x read-target=%u program-target=%u\r\n",
         page, (unsigned)data[0], (unsigned)debug_hash(data, (unsigned)bytes), (unsigned)debug_hash(oob, (unsigned)on),
-        (unsigned)mb8_nand_board.clock_hz, (unsigned)(mb8_nand_board.clock_hz < 12000000u ? mb8_nand_board.clock_hz : 12000000u));
+        (unsigned)mb8_nand_board.clock_hz,
+#if WATCH_NAND_TRACE_CLOCK == 48000000
+        (unsigned)mb8_nand_board.clock_hz);
+#else
+        (unsigned)(mb8_nand_board.clock_hz < 12000000u ? mb8_nand_board.clock_hz : 12000000u));
+#endif
     int result = ds35_program(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
     if (result < 0) { scan_error = true; nand.writable = false;
         mb8_storage_log("[NAND WRITE] PROGRAM FAIL page=%d rc=%d phase=%s status-valid=%u C0=%02x\r\n",
