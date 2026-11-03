@@ -2148,6 +2148,11 @@ void yaffs_block_became_dirty(struct yaffs_dev *dev, int block_no)
 	int erased_ok = 0;
 	u32 i;
 
+	/* A read-only mount must never turn an erase refusal into block
+	 * retirement, including when this is called from a scan cleanup path. */
+	if (dev->read_only)
+		return;
+
 	/* If the block is still healthy erase it and mark as clean.
 	 * If the block has had a data failure, then retire it.
 	 */

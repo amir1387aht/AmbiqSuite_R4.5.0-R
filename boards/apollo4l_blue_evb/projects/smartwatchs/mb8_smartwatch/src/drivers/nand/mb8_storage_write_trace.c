@@ -31,10 +31,11 @@ void mb8_storage_write_trace(void)
     int fd = -1, rc;
     const char *phase = "RO preflight";
     struct yaffs_stat st;
-    mb8_storage_log("[NAND WRITE] automatic test: read-target=%uHz, program-load <=12MHz; creates test files and deletes bulk file. No full format. YAFFS may erase old checkpoint and empty dirty blocks during deletion.\r\n",
+    mb8_storage_log("[NAND WRITE] automatic test: read-target=%uHz, program-load <=12MHz; creates test files and deletes bulk file. No full format. YAFFS may reclaim empty blocks and old checkpoints during read-write operations.\r\n",
         (unsigned)WATCH_NAND_TRACE_CLOCK);
     if (mb8_storage_mount(true) < 0) goto done;
     mounted = true;
+    mb8_storage_log("[NAND WRITE] read-only recovery scan PASS; array writes prohibited.\r\n");
 #if WATCH_NAND_TRACE_CLOCK == 48000000
     phase = "read-only cross-check of failed page 131";
     rc = mb8_storage_debug_compare_page(131u);
@@ -223,12 +224,8 @@ void mb8_storage_write_trace(void)
     if (mb8_storage_mount(false) < 0) goto done;
     mounted=writable=true;
     phase = "delete bulk test only";
-    mb8_storage_trace_reclaim(true);
-    rc=yaffs_unlink(bulk);
-    if (rc < 0 || mb8_storage_debug_failed()) { mb8_storage_trace_reclaim(false); goto done; }
-    rc=yaffs_sync("/nand");
-    mb8_storage_trace_reclaim(false);
-    if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    rc=yaffs_unlink(bulk); if (rc < 0 || mb8_storage_debug_failed()) goto done;
+    rc=yaffs_sync("/nand"); if (rc < 0 || mb8_storage_debug_failed()) goto done;
     phase = "delete RW unmount";
     rc=mb8_storage_unmount(); if (rc < 0) goto done; mounted=writable=false;
     phase = "delete RO remount";
@@ -261,7 +258,6 @@ void mb8_storage_write_trace(void)
     rc=mb8_storage_unmount(); if (rc < 0) goto done; mounted=false;
     ok=true;
 done:
-    mb8_storage_trace_reclaim(false);
     mb8_storage_debug_trace(false);
     mb8_storage_log("[NAND WRITE] RESULT=%s phase=%s status=%s errno=%d; test file retained if created.\r\n",ok?"PASS":"FAIL",phase,mb8_storage_status(),yaffs_get_error());
     if (!ok && writable) mb8_storage_write_trace_abort();

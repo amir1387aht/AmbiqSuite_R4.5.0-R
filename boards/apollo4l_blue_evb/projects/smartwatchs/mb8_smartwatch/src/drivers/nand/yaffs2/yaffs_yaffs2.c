@@ -1680,8 +1680,10 @@ int yaffs2_scan_backwards(struct yaffs_dev *dev)
 			bi->block_state = YAFFS_BLOCK_STATE_FULL;
 		}
 
-		/* Now let's see if it was dirty */
-		if (bi->pages_in_use == 0 &&
+		/* A read-only scan must not erase or retire obsolete blocks. Keep
+		 * them FULL with no live chunks so normal writable GC can reclaim
+		 * them after an explicit read-write remount. */
+		if (!dev->read_only && bi->pages_in_use == 0 &&
 		    !bi->has_shrink_hdr &&
 		    bi->block_state == YAFFS_BLOCK_STATE_FULL) {
 			yaffs_block_became_dirty(dev, blk);
