@@ -12,8 +12,8 @@
 static const char original[] = "/nand/format-check/known-pattern.bin";
 #if WATCH_NAND_TRACE_CLOCK == 48000000
 static const char previous_test[] = "/nand/wfix2";
-static const char test[] = "/nand/wtx48a";
-static const char bulk[] = "/nand/wtx48bulk";
+static const char test[] = "/nand/wpio48a";
+static const char bulk[] = "/nand/wpio48bulk";
 static const char earlier_bulk[] = "/nand/wfixbulk";
 #else
 static const char previous_test[] = "/nand/write-trace-12.bin";
@@ -32,7 +32,7 @@ void mb8_storage_write_trace(void)
     const char *phase = "RO preflight";
     struct yaffs_stat st;
 #if WATCH_NAND_TRACE_CLOCK == 48000000
-    mb8_storage_log("[NAND WRITE] EXPERIMENT: 48MHz program-load TXNEG=1, 48MHz read; new files only, bulk test deleted. No full format. YAFFS may reclaim empty blocks and old checkpoints.\r\n");
+    mb8_storage_log("[NAND WRITE] EXPERIMENT: 48MHz program-load PIO TXNEG=0, 48MHz read; new files only, bulk test deleted. No full format. YAFFS may reclaim empty blocks and old checkpoints.\r\n");
 #else
     mb8_storage_log("[NAND WRITE] automatic test: read-target=%uHz, program-load <=12MHz; creates test files. No full format. YAFFS may reclaim empty blocks and old checkpoints.\r\n", (unsigned)WATCH_NAND_TRACE_CLOCK);
 #endif
