@@ -239,7 +239,7 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
      */
     bool fast_program_pio = false;
 #if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
-    fast_program_pio = !p->dma && p->opcode == 0x02 && p->data_width == 1;
+    fast_program_pio = !p->dma && p->opcode == 0x84 && p->data_width == 1;
 #endif
     if (!p->dma && select_clock(AM_HAL_MSPI_CLK_12MHZ, "serial-control-clock") < 0)
         return DS35_IO;
@@ -300,8 +300,8 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
      * a claim about the underlying electrical/controller cause. */
     uint32_t data_divider = mb8_nand_mspi_data_divider(p, target_divider);
 #if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
-    /* Debug-only serial FIFO experiment; ordinary builds retain the quad cap. */
-    if (fast_program_pio)
+    /* Debug-only quad load plus serial cache repair; ordinary builds retain the cap. */
+    if (fast_program_pio || (p->dma && p->opcode == 0x32))
         data_divider = target_divider;
 #endif
 #if WATCH_NAND_FULL_FORMAT
@@ -321,6 +321,12 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
     MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0 = txneg;
     __DSB();
     if (MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0 != txneg ||
+        ((fast_program_pio || (p->dma && p->opcode == 0x32)) &&
+            (current_divider != AM_HAL_MSPI_CLK_48MHZ ||
+             MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.CLKDIV0 != AM_HAL_MSPI_CLK_48MHZ)) ||
+        (p->dma && p->opcode == 0x32 &&
+            (MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.SEPIO0 ||
+             MSPIn(mb8_nand_board.mspi)->CTRL1_b.PIOMIXED != MSPI0_CTRL1_PIOMIXED_D4)) ||
         (fast_program_pio && (current_divider != AM_HAL_MSPI_CLK_48MHZ ||
             MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.CLKDIV0 != AM_HAL_MSPI_CLK_48MHZ ||
             !MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.SEPIO0 ||
@@ -342,12 +348,12 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
 static uint32_t program_fifo_48(uint32_t column, const uint32_t *data, uint32_t bytes)
 {
     uint32_t module = mb8_nand_board.mspi;
-    if (column != 0 || bytes != DS35_PROGRAM_BYTES || (bytes & 3u))
+    if (column != 0 || bytes != 4u)
         return AM_HAL_STATUS_INVALID_ARG;
     uint32_t mask = MSPIn(module)->INTEN;
     MSPIn(module)->INTEN = 0;
     MSPIn(module)->INTCLR = AM_HAL_MSPI_INT_ALL;
-    MSPIn(module)->INSTR = _VAL2FLD(MSPI0_INSTR_INSTR, 0x02);
+    MSPIn(module)->INSTR = _VAL2FLD(MSPI0_INSTR_INSTR, 0x84);
     MSPIn(module)->ADDR = _VAL2FLD(MSPI0_ADDR_ADDR, column);
     /* TX, little-endian, device0, no turnaround/write latency, no DCX. */
     uint32_t ctrl = _VAL2FLD(MSPI0_CTRL_XFERBYTES, bytes) |
@@ -401,13 +407,15 @@ static int transfer(void *ctx,
     if (r < 0)
         return r;
 #if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
-    /* Diagnostic only: use documented serial program-load 02 at 48 MHz.
-     * Keep the high-level quad read configuration and the same full payload. */
-    if (p.opcode == 0x32)
+    /* Save the original prefix before DMA and before reusing the bounce buffer.
+     * A serial random-data load repairs it in the NAND cache before EXECUTE. */
+    uint8_t prefix[4] = {0};
+    const bool repair_prefix = p.opcode == 0x32;
+    if (repair_prefix)
     {
-        p.opcode = 0x02;
-        p.data_width = 1;
-        p.dma = false;
+        if (!tx || len != DS35_PROGRAM_BYTES || p.address != 0)
+            return DS35_EINVAL;
+        memcpy(prefix, tx, sizeof(prefix));
     }
 #endif
 #if WATCH_NAND_FULL_FORMAT
@@ -420,7 +428,7 @@ static int transfer(void *ctx,
     if (tx)
         memcpy(bounce, tx, len);
 #if WATCH_NAND_WRITE_TRACE
-    if ((p.opcode == 0x32 || p.opcode == 0x02) && tx && len)
+    if (p.opcode == 0x32 && tx && len)
         mb8_storage_log("[NAND WRITE] PROGRAM engine=%s opcode=%02x lanes=%u input0=%02x bounce0=%02x length=%u target-clock=%u CLKDIV=%u SEPIO=%u PIOMIXED=%u TXNEG=%u\r\n",
             p.dma ? "DMA" : "PIO", (unsigned)p.opcode, (unsigned)p.data_width, (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len, (unsigned)(96000000u / current_divider),
             (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.CLKDIV0,
@@ -431,8 +439,7 @@ static int transfer(void *ctx,
     uint32_t status;
     if (!p.dma)
     {
-        /* PIO handles serial controls; debug-only program uses serial 1-1-1.
-         * QE alone never changes control commands to four lanes. */
+        /* PIO handles serial controls; QE does not make these commands quad. */
         am_hal_mspi_pio_transfer_t t = {.ui32NumBytes = len,
             .eDirection                               = p.receive ? AM_HAL_MSPI_RX : AM_HAL_MSPI_TX,
             .bSendAddr                                = p.address_bytes != 0,
@@ -441,12 +448,7 @@ static int transfer(void *ctx,
             .bTurnaround                              = p.dummy_clocks != 0,
             .ui16DeviceInstr                          = p.opcode,
             .pui32Buffer                              = bounce};
-#if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
-        if (p.opcode == 0x02)
-            status = program_fifo_48(p.address, bounce, (uint32_t)len);
-        else
-#endif
-            status = am_hal_mspi_blocking_transfer(mspi, &t, 2000);
+        status = am_hal_mspi_blocking_transfer(mspi, &t, 2000);
     }
     else
     {
@@ -513,6 +515,34 @@ static int transfer(void *ctx,
     if (rx)
         memcpy(rx, bounce, len);
     am_util_delay_us(1); /* Part tCS>=100ns, conservative margin. */
+#if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
+    if (repair_prefix)
+    {
+        /* 32 initializes/loads the NAND cache. 84 replaces only columns 0..3
+         * in that same cache, before the core issues its single 10 EXECUTE.
+         * No retry on either failure. This is an on-watch experiment only. */
+        struct mb8_nand_mspi_plan fix = { .opcode = 0x84, .address = 0,
+            .address_bytes = 2, .data_width = 1, .dma = false, .receive = false };
+        if ((r = configure_phase(&fix)) < 0)
+            return r;
+        memcpy(bounce, prefix, sizeof(prefix));
+        mb8_nand_diag_wire(0x84, 0, sizeof(prefix), 1);
+        mb8_storage_log("[NAND WRITE] CACHE-REPAIR opcode=84 lanes=1 bytes=4 first=%02x CLKDIV=%u SEPIO=%u PIOMIXED=%u TXNEG=%u\r\n",
+            (unsigned)prefix[0], (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.CLKDIV0,
+            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.SEPIO0,
+            (unsigned)MSPIn(mb8_nand_board.mspi)->CTRL1_b.PIOMIXED,
+            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0);
+        status = program_fifo_48(0, bounce, sizeof(prefix));
+        if (status)
+        {
+            mb8_nand_diag_hal(status, "cache-repair-84");
+            r = status == AM_HAL_STATUS_TIMEOUT ? DS35_TIMEOUT : DS35_IO;
+            abort_controller();
+            return r;
+        }
+        am_util_delay_us(1);
+    }
+#endif
     return DS35_OK;
 }
 
