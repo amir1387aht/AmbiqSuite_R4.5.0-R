@@ -239,9 +239,9 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
      */
     bool fast_program_pio = false;
 #if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
-    fast_program_pio = !p->dma && p->opcode == 0x32 && p->data_width == 4;
+    fast_program_pio = !p->dma && p->opcode == 0x02 && p->data_width == 1;
 #endif
-    if (!p->dma && !fast_program_pio && select_clock(AM_HAL_MSPI_CLK_12MHZ, "serial-control-clock") < 0)
+    if (!p->dma && select_clock(AM_HAL_MSPI_CLK_12MHZ, "serial-control-clock") < 0)
         return DS35_IO;
     uint32_t status = AM_HAL_STATUS_SUCCESS;
     if (current_width != p->data_width)
@@ -300,7 +300,7 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
      * a claim about the underlying electrical/controller cause. */
     uint32_t data_divider = mb8_nand_mspi_data_divider(p, target_divider);
 #if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
-    /* Debug-only FIFO/PIO experiment; ordinary builds retain the cap. */
+    /* Debug-only serial FIFO experiment; ordinary builds retain the quad cap. */
     if (fast_program_pio)
         data_divider = target_divider;
 #endif
@@ -310,7 +310,7 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
     if (diagnostic_read_mode && diagnostic_read_mode != 4)
         data_divider = AM_HAL_MSPI_CLK_12MHZ;
 #endif
-    if ((p->dma || fast_program_pio) && select_clock(data_divider, "quad-data-clock") < 0)
+    if ((p->dma || fast_program_pio) && select_clock(data_divider, fast_program_pio ? "serial-program-clock" : "quad-data-clock") < 0)
         return DS35_IO;
     /* The plan permits 6B reads only with quad DMA. Serial03 remains HAL timing. */
     if (select_receive_timing(p->opcode == 0x6b && p->receive) < 0)
@@ -321,9 +321,12 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
     MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0 = txneg;
     __DSB();
     if (MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0 != txneg ||
-        (fast_program_pio && current_divider != AM_HAL_MSPI_CLK_48MHZ))
+        (fast_program_pio && (current_divider != AM_HAL_MSPI_CLK_48MHZ ||
+            MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.CLKDIV0 != AM_HAL_MSPI_CLK_48MHZ ||
+            !MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.SEPIO0 ||
+            MSPIn(mb8_nand_board.mspi)->CTRL1_b.PIOMIXED != MSPI0_CTRL1_PIOMIXED_NORMAL)))
     {
-        mb8_nand_diag_fail(DS35_IO, "PIO48-timing-readback", "clock or TXNEG did not latch");
+        mb8_nand_diag_fail(DS35_IO, "PIO48-timing-readback", "clock, TX edge or serial mode did not latch");
         abort_controller();
         return DS35_IO;
     }
@@ -335,7 +338,7 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
 /* Debug-only equivalent of the vendor PIO TX path. The vendor FIFO helper
  * overwrites an intermediate timeout on each word; stop on the first timeout
  * so a failed load is never followed by PROGRAM EXECUTE. The worker owns MSPI
- * and configure_phase has already checked DMA idle and set 1-1-4 mode. */
+ * and configure_phase has checked DMA idle and set serial mode. */
 static uint32_t program_fifo_48(uint32_t column, const uint32_t *data, uint32_t bytes)
 {
     uint32_t module = mb8_nand_board.mspi;
@@ -344,7 +347,7 @@ static uint32_t program_fifo_48(uint32_t column, const uint32_t *data, uint32_t 
     uint32_t mask = MSPIn(module)->INTEN;
     MSPIn(module)->INTEN = 0;
     MSPIn(module)->INTCLR = AM_HAL_MSPI_INT_ALL;
-    MSPIn(module)->INSTR = _VAL2FLD(MSPI0_INSTR_INSTR, 0x32);
+    MSPIn(module)->INSTR = _VAL2FLD(MSPI0_INSTR_INSTR, 0x02);
     MSPIn(module)->ADDR = _VAL2FLD(MSPI0_ADDR_ADDR, column);
     /* TX, little-endian, device0, no turnaround/write latency, no DCX. */
     uint32_t ctrl = _VAL2FLD(MSPI0_CTRL_XFERBYTES, bytes) |
@@ -398,29 +401,37 @@ static int transfer(void *ctx,
     if (r < 0)
         return r;
 #if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
-    /* Same 1-1-4 opcode/address/data, but use FIFO instead of DMA. */
+    /* Diagnostic only: use documented serial program-load 02 at 48 MHz.
+     * Keep the high-level quad read configuration and the same full payload. */
     if (p.opcode == 0x32)
+    {
+        p.opcode = 0x02;
+        p.data_width = 1;
         p.dma = false;
+    }
 #endif
 #if WATCH_NAND_FULL_FORMAT
     if (p.opcode == 0x6b && diagnostic_read_mode == 2)
         p.dma = false;
 #endif
-    mb8_nand_diag_wire(p.opcode, p.address, (uint32_t)len, width);
+    mb8_nand_diag_wire(p.opcode, p.address, (uint32_t)len, p.data_width);
     if ((r = configure_phase(&p)) < 0)
         return r;
     if (tx)
         memcpy(bounce, tx, len);
 #if WATCH_NAND_WRITE_TRACE
-    if (p.opcode == 0x32 && tx && len)
-        mb8_storage_log("[NAND WRITE] PROGRAM engine=%s input0=%02x bounce0=%02x length=%u active-clock=%u TXNEG=%u\r\n",
-            p.dma ? "DMA" : "PIO", (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len, (unsigned)(96000000u / current_divider),
+    if ((p.opcode == 0x32 || p.opcode == 0x02) && tx && len)
+        mb8_storage_log("[NAND WRITE] PROGRAM engine=%s opcode=%02x lanes=%u input0=%02x bounce0=%02x length=%u target-clock=%u CLKDIV=%u SEPIO=%u PIOMIXED=%u TXNEG=%u\r\n",
+            p.dma ? "DMA" : "PIO", (unsigned)p.opcode, (unsigned)p.data_width, (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len, (unsigned)(96000000u / current_divider),
+            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.CLKDIV0,
+            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.SEPIO0,
+            (unsigned)MSPIn(mb8_nand_board.mspi)->CTRL1_b.PIOMIXED,
             (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0);
 #endif
     uint32_t status;
     if (!p.dma)
     {
-        /* PIO handles serial controls; debug-only program uses mixed 1-1-4.
+        /* PIO handles serial controls; debug-only program uses serial 1-1-1.
          * QE alone never changes control commands to four lanes. */
         am_hal_mspi_pio_transfer_t t = {.ui32NumBytes = len,
             .eDirection                               = p.receive ? AM_HAL_MSPI_RX : AM_HAL_MSPI_TX,
@@ -431,7 +442,7 @@ static int transfer(void *ctx,
             .ui16DeviceInstr                          = p.opcode,
             .pui32Buffer                              = bounce};
 #if WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000
-        if (p.opcode == 0x32)
+        if (p.opcode == 0x02)
             status = program_fifo_48(p.address, bounce, (uint32_t)len);
         else
 #endif
