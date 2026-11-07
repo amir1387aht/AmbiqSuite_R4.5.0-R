@@ -227,9 +227,9 @@ static int read_chunk(
     if (r < 0)
     {
         scan_error = true;
+        nand.writable = false;
 #if WATCH_NAND_FULL_FORMAT
         format_io_failed = true;
-        nand.writable    = false;
 #endif
         return YAFFS_FAIL;
     }
@@ -291,7 +291,7 @@ static int write_chunk(
     (void)d; (void)page; (void)data; (void)bytes; (void)oob; (void)on;
     return YAFFS_FAIL;
 #endif
-    if (d->read_only)
+    if (d->read_only || scan_error || !nand.writable)
         return YAFFS_FAIL;
 #if WATCH_NAND_FULL_FORMAT
     if (format_io_failed || scan_error)
@@ -302,13 +302,14 @@ static int write_chunk(
     }
 #endif
     int r = ds35_program(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
-#if WATCH_NAND_FULL_FORMAT
     if (r != DS35_OK)
     {
-        format_io_failed = scan_error = true;
-        nand.writable                 = false;
-    }
+        scan_error = true;
+        nand.writable = false;
+#if WATCH_NAND_FULL_FORMAT
+        format_io_failed = true;
 #endif
+    }
     return r == DS35_OK ? YAFFS_OK : YAFFS_FAIL;
 }
 
@@ -343,7 +344,7 @@ static int erase_block(struct yaffs_dev *d, int block)
     (void)d; (void)block;
     return YAFFS_FAIL;
 #endif
-    if (d->read_only)
+    if (d->read_only || scan_error || !nand.writable)
         return YAFFS_FAIL;
 #if WATCH_NAND_FULL_FORMAT
     if (format_io_failed || scan_error)
@@ -354,34 +355,30 @@ static int erase_block(struct yaffs_dev *d, int block)
     }
 #endif
     int r = ds35_erase(&nand, (uint32_t)block);
-#if WATCH_NAND_FULL_FORMAT
     if (r != DS35_OK)
     {
-        format_io_failed = scan_error = true;
-        nand.writable                 = false;
-    }
+        scan_error = true;
+        nand.writable = false;
+#if WATCH_NAND_FULL_FORMAT
+        format_io_failed = true;
 #endif
+    }
     return r == DS35_OK ? YAFFS_OK : YAFFS_FAIL;
 }
 
 static int mark_bad(struct yaffs_dev *d, int block)
 {
-#if WATCH_NAND_DEBUG_REPRO
-    (void)d; (void)block;
-    return YAFFS_FAIL;
-#endif
-#if WATCH_NAND_FULL_FORMAT
-    /* YAFFS may request retirement after a failed write. This diagnostic stops
-     * instead: never turn an ambiguous transport failure into a persistent BBM. */
+    /* Do not turn an ambiguous I/O failure into a permanent bad-block marker.
+     * Stop this mount instead; explicit media-failure retirement needs a
+     * separate verified policy before normal writes can be enabled. */
     (void)d;
     (void)block;
-    format_io_failed = scan_error = true;
-    nand.writable                 = false;
-    return YAFFS_FAIL;
-#else
-    return !d->read_only && ds35_mark_bad(&nand, (uint32_t)block) == DS35_OK ? YAFFS_OK
-                                                                             : YAFFS_FAIL;
+    scan_error = true;
+    nand.writable = false;
+#if WATCH_NAND_FULL_FORMAT
+    format_io_failed = true;
 #endif
+    return YAFFS_FAIL;
 }
 
 static int check_bad(struct yaffs_dev *d, int block)
@@ -391,9 +388,9 @@ static int check_bad(struct yaffs_dev *d, int block)
     if (r != DS35_OK && r != DS35_BAD)
     {
         scan_error = true;
+        nand.writable = false;
 #if WATCH_NAND_FULL_FORMAT
         format_io_failed = true;
-        nand.writable    = false;
 #endif
     }
     return r == DS35_OK ? YAFFS_OK : YAFFS_FAIL;
@@ -413,9 +410,9 @@ static int query_block(struct yaffs_dev *d, int block, enum yaffs_block_state *s
     if (r != DS35_OK)
     {
         scan_error = true;
+        nand.writable = false;
 #if WATCH_NAND_FULL_FORMAT
         format_io_failed = true;
-        nand.writable    = false;
 #endif
         return YAFFS_FAIL;
     }
@@ -423,9 +420,9 @@ static int query_block(struct yaffs_dev *d, int block, enum yaffs_block_state *s
     if (d->tagger.read_chunk_tags_fn(d, block * 64, NULL, &tags) != YAFFS_OK)
     {
         scan_error = true;
+        nand.writable = false;
 #if WATCH_NAND_FULL_FORMAT
         format_io_failed = true;
-        nand.writable    = false;
 #endif
         return YAFFS_FAIL;
     }
@@ -1243,7 +1240,8 @@ int mb8_storage_mount(bool read_only)
         /* Remount after a successful read-only validation. YAFFS remount does
          * not format. Blank partition provisioning must be explicitly approved.
          */
-        if (ds35_allow_writes(&nand) != DS35_OK || yaffs_remount("/nand", 0, 0) < 0
+        if (ds35_allow_writes(&nand) != DS35_OK || yaffs_remount("/nand", 0, 0) < 0 ||
+            scan_error || nand.fault
 #if WATCH_NAND_FULL_FORMAT
             || format_io_failed
 #endif
@@ -1292,8 +1290,13 @@ int mb8_storage_unmount(void)
         status_text = "NAND QE/ECC restore failed; reset/recovery required";
         return -1;
     }
+    if (scan_error || nand.fault)
+    {
+        status_text = "NAND I/O failure retained despite hardware cleanup; filesystem needs inspection";
+        return -1;
+    }
 #if WATCH_NAND_FULL_FORMAT
-    if (format_io_failed || scan_error)
+    if (format_io_failed)
     {
         status_text = "format/test I/O failure retained despite successful hardware cleanup";
         return -1;

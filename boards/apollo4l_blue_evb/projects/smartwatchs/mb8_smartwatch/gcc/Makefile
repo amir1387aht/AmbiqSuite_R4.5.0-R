@@ -12,7 +12,7 @@ GPU_PROFILE ?= 0
 WATCH_NAND_YAFFS2 ?= 1
 WATCH_NAND_MSPI_QUAD ?= 1
 # Temporary startup diagnostics. Permanent capacity report is independent.
-WATCH_NAND_STARTUP_TESTS ?= 1
+WATCH_NAND_STARTUP_TESTS ?= 0
 WATCH_NAND_TEST_WRITE ?= 0
 WATCH_NAND_FULL_FORMAT ?= 0
 # Temporary automatic write-path diagnostic; never formats.
