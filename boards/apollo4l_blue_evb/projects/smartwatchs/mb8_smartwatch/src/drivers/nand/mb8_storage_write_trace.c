@@ -11,10 +11,10 @@
 
 static const char original[] = "/nand/format-check/known-pattern.bin";
 #if WATCH_NAND_TRACE_CLOCK == 48000000
-static const char previous_test[] = "/nand/ws48a";
-static const char test[] = "/nand/wqrepair1";
-static const char bulk[] = "/nand/wqrepairbulk";
-static const char earlier_bulk[] = "/nand/wfixbulk";
+static const char previous_test[] = "/nand/wqrepair1";
+static const char test[] = "/nand/wqrepair2";
+static const char bulk[] = "/nand/wqrepairbulk2";
+static const char earlier_bulk[] = "/nand/wqrepairbulk";
 #else
 static const char previous_test[] = "/nand/write-trace-12.bin";
 static const char test[] = "/nand/wtrace12b";
@@ -32,7 +32,7 @@ void mb8_storage_write_trace(void)
     const char *phase = "RO preflight";
     struct yaffs_stat st;
 #if WATCH_NAND_TRACE_CLOCK == 48000000
-    mb8_storage_log("[NAND WRITE] EXPERIMENT: 48MHz quad 32 DMA load + serial 84 cache-prefix repair, 48MHz quad read; new files only, bulk test deleted. No full format. YAFFS may reclaim empty blocks and old checkpoints.\r\n");
+    mb8_storage_log("[NAND WRITE] EXPERIMENT FOLLOW-UP: 48MHz quad 32 DMA load + serial 84 cache-prefix repair, 48MHz quad read; new files only, bulk test deleted. No full format. YAFFS may reclaim empty blocks and old checkpoints.\r\n");
 #else
     mb8_storage_log("[NAND WRITE] automatic test: read-target=%uHz, program-load <=12MHz; creates test files. No full format. YAFFS may reclaim empty blocks and old checkpoints.\r\n", (unsigned)WATCH_NAND_TRACE_CLOCK);
 #endif
@@ -66,12 +66,12 @@ void mb8_storage_write_trace(void)
     yaffsfs_SetError(0);
     rc = yaffs_lstat(previous_test, &st);
     int prior_error = yaffs_get_error();
-    mb8_storage_log("[NAND WRITE] previous-test stat rc=%d errno=%d length=%lld read-error=%u\r\n",
-        rc, prior_error, rc == 0 ? (long long)st.st_size : -1LL, (unsigned)mb8_storage_debug_failed());
+    mb8_storage_log("[NAND WRITE] previous-test path=%s stat rc=%d errno=%d length=%lld read-error=%u\r\n",
+        previous_test, rc, prior_error, rc == 0 ? (long long)st.st_size : -1LL, (unsigned)mb8_storage_debug_failed());
     if (mb8_storage_debug_failed() || (rc < 0 && prior_error != -ENOENT)) goto done;
 #if WATCH_NAND_TRACE_CLOCK == 48000000
     if (rc != 0 || st.st_size != 2049) {
-        phase = "previous mixed-speed file missing or wrong size; no writes"; goto done;
+        phase = "previous quad-repair file missing or wrong size; no writes"; goto done;
     }
 #endif
     if (rc == 0 && st.st_size == 2049) {
@@ -97,7 +97,7 @@ void mb8_storage_write_trace(void)
         rc = yaffs_close(fd); fd = -1;
         if (rc < 0) goto done;
 #if WATCH_NAND_TRACE_CLOCK == 48000000
-        if (!prior_match) { phase = "previous mixed-speed file mismatch; no writes"; goto done; }
+        if (!prior_match) { phase = "previous quad-repair file mismatch; no writes"; goto done; }
 #endif
     }
 #if WATCH_NAND_TRACE_CLOCK == 48000000
@@ -105,8 +105,8 @@ void mb8_storage_write_trace(void)
     yaffsfs_SetError(0);
     rc = yaffs_lstat(earlier_bulk, &st);
     int earlier_err = yaffs_get_error();
-    mb8_storage_log("[NAND WRITE] previous bulk stat rc=%d errno=%d length=%lld; not explicitly deleted\r\n",
-        rc, earlier_err, rc == 0 ? (long long)st.st_size : -1LL);
+    mb8_storage_log("[NAND WRITE] previous bulk path=%s stat rc=%d errno=%d length=%lld; not explicitly deleted\r\n",
+        earlier_bulk, rc, earlier_err, rc == 0 ? (long long)st.st_size : -1LL);
     if (mb8_storage_debug_failed() || (rc < 0 && earlier_err != -ENOENT)) goto done;
 #endif
     phase = "check exclusive test path";
