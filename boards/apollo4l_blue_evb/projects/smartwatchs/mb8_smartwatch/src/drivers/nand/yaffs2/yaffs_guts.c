@@ -2767,7 +2767,7 @@ static int yaffs_rd_data_obj(struct yaffs_obj *in, int inode_chunk, u8 * buffer)
 			nand_chunk);
 		/* get sane (zero) data if you read a hole */
 		memset(buffer, 0, in->my_dev->data_bytes_per_chunk);
-		return 0;
+		return YAFFS_OK;
 	}
 
 }
@@ -3274,12 +3274,16 @@ int yaffs_file_rd(struct yaffs_obj *in, u8 * buffer, Y_LOFF_T offset, int n_byte
 				if (!cache) {
 					cache =
 					    yaffs_grab_chunk_cache(in->my_dev);
+					if (!cache)
+						return n_done ? n_done : -1;
 					cache->object = in;
 					cache->chunk_id = chunk;
 					cache->dirty = 0;
 					cache->locked = 0;
-					yaffs_rd_data_obj(in, chunk,
-							  cache->data);
+					if (yaffs_rd_data_obj(in, chunk, cache->data) != YAFFS_OK) {
+						cache->object = NULL;
+						return n_done ? n_done : -1;
+					}
 					cache->n_bytes = 0;
 				}
 
@@ -3295,7 +3299,10 @@ int yaffs_file_rd(struct yaffs_obj *in, u8 * buffer, Y_LOFF_T offset, int n_byte
 
 				u8 *local_buffer =
 				    yaffs_get_temp_buffer(dev);
-				yaffs_rd_data_obj(in, chunk, local_buffer);
+				if (yaffs_rd_data_obj(in, chunk, local_buffer) != YAFFS_OK) {
+					yaffs_release_temp_buffer(dev, local_buffer);
+					return n_done ? n_done : -1;
+				}
 
 				memcpy(buffer, &local_buffer[start], n_copy);
 
@@ -3303,7 +3310,8 @@ int yaffs_file_rd(struct yaffs_obj *in, u8 * buffer, Y_LOFF_T offset, int n_byte
 			}
 		} else {
 			/* A full chunk. Read directly into the buffer. */
-			yaffs_rd_data_obj(in, chunk, buffer);
+			if (yaffs_rd_data_obj(in, chunk, buffer) != YAFFS_OK)
+				return n_done ? n_done : -1;
 		}
 		n -= n_copy;
 		offset += n_copy;
@@ -3400,12 +3408,19 @@ int yaffs_do_file_wr(struct yaffs_obj *in, const u8 *buffer, Y_LOFF_T offset,
 				if (!cache &&
 				    yaffs_check_alloc_available(dev, 1)) {
 					cache = yaffs_grab_chunk_cache(dev);
+					if (!cache) {
+						chunk_written = -1;
+						break;
+					}
 					cache->object = in;
 					cache->chunk_id = chunk;
 					cache->dirty = 0;
 					cache->locked = 0;
-					yaffs_rd_data_obj(in, chunk,
-							  cache->data);
+					if (yaffs_rd_data_obj(in, chunk, cache->data) != YAFFS_OK) {
+						cache->object = NULL;
+						chunk_written = -1;
+						break;
+					}
 				} else if (cache &&
 					   !cache->dirty &&
 					   !yaffs_check_alloc_available(dev,
@@ -3447,7 +3462,11 @@ int yaffs_do_file_wr(struct yaffs_obj *in, const u8 *buffer, Y_LOFF_T offset,
 
 				u8 *local_buffer = yaffs_get_temp_buffer(dev);
 
-				yaffs_rd_data_obj(in, chunk, local_buffer);
+				if (yaffs_rd_data_obj(in, chunk, local_buffer) != YAFFS_OK) {
+					yaffs_release_temp_buffer(dev, local_buffer);
+					chunk_written = -1;
+					break;
+				}
 				memcpy(&local_buffer[start], buffer, n_copy);
 
 				chunk_written =
@@ -3581,7 +3600,8 @@ int yaffs_resize_file(struct yaffs_obj *in, Y_LOFF_T new_size)
 	struct yaffs_dev *dev = in->my_dev;
 	Y_LOFF_T old_size = in->variant.file_variant.file_size;
 
-	yaffs_flush_file_cache(in, 1);
+	if (yaffs_flush_file_cache(in, 1) != YAFFS_OK)
+		return YAFFS_FAIL;
 	yaffs_invalidate_file_cache(in);
 
 	yaffs_check_gc(dev, 0);
@@ -3619,10 +3639,11 @@ int yaffs_flush_file(struct yaffs_obj *in,
 		     int data_sync,
 		     int discard_cache)
 {
-	if (!in->dirty)
+	if (!in->dirty && !yaffs_obj_cache_dirty(in))
 		return YAFFS_OK;
 
-	yaffs_flush_file_cache(in, discard_cache);
+	if (yaffs_flush_file_cache(in, discard_cache) != YAFFS_OK)
+		return YAFFS_FAIL;
 
 	if (data_sync)
 		return YAFFS_OK;

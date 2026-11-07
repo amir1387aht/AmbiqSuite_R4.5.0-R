@@ -20,10 +20,10 @@
 int yaffs_obj_cache_dirty(struct yaffs_obj *obj);
 
 /* Flush the cache associated with a file, either discarding or keeping */
-void yaffs_flush_file_cache(struct yaffs_obj *obj, int discard);
+int yaffs_flush_file_cache(struct yaffs_obj *obj, int discard);
 
 /* Flush everything in the cache, either discarding or keeping */
-void yaffs_flush_whole_cache(struct yaffs_dev *dev, int discard);
+int yaffs_flush_whole_cache(struct yaffs_dev *dev, int discard);
 
 /* Grab a cache item during read or write. */
 struct yaffs_cache *yaffs_grab_chunk_cache(struct yaffs_dev *dev);

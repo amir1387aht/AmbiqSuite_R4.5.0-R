@@ -41,68 +41,49 @@ int yaffs_obj_cache_dirty(struct yaffs_obj *obj)
 	return 0;
 }
 
-void yaffs_flush_single_cache(struct yaffs_cache *cache, int discard)
+static int yaffs_flush_single_cache(struct yaffs_cache *cache, int discard)
 {
-
 	if (!cache || cache->locked)
-		return;
-
-	/* Write it out and free it up  if need be.*/
+		return YAFFS_FAIL;
 	if (cache->dirty) {
-		yaffs_wr_data_obj(cache->object,
-				  cache->chunk_id,
-				  cache->data,
-				  cache->n_bytes,
-				  1);
-
+		/* A failed data program must never turn a dirty cache into a clean one. */
+		if (yaffs_wr_data_obj(cache->object, cache->chunk_id,
+				      cache->data, cache->n_bytes, 1) < 1)
+			return YAFFS_FAIL;
 		cache->dirty = 0;
 	}
-
 	if (discard)
 		cache->object = NULL;
+	return YAFFS_OK;
 }
 
-void yaffs_flush_file_cache(struct yaffs_obj *obj, int discard)
+int yaffs_flush_file_cache(struct yaffs_obj *obj, int discard)
 {
-	struct yaffs_dev *dev = obj->my_dev;
+	struct yaffs_cache_manager *mgr = &obj->my_dev->cache_mgr;
 	int i;
-	struct yaffs_cache_manager *mgr = &dev->cache_mgr;
-
-	if (mgr->n_caches < 1)
-		return;
-
-
-	/* Find the chunks for this object and flush them. */
 	for (i = 0; i < mgr->n_caches; i++) {
 		struct yaffs_cache *cache = &mgr->cache[i];
-
-		if (cache->object == obj)
-			yaffs_flush_single_cache(cache, discard);
+		if (cache->object == obj &&
+		    yaffs_flush_single_cache(cache, discard) != YAFFS_OK)
+			return YAFFS_FAIL;
 	}
-
+	return YAFFS_OK;
 }
 
-
-void yaffs_flush_whole_cache(struct yaffs_dev *dev, int discard)
+int yaffs_flush_whole_cache(struct yaffs_dev *dev, int discard)
 {
 	struct yaffs_cache_manager *mgr = &dev->cache_mgr;
 	struct yaffs_obj *obj;
 	int i;
-
-	/* Find a dirty object in the cache and flush it...
-	 * until there are no further dirty objects.
-	 */
 	do {
 		obj = NULL;
-		for (i = 0; i < mgr->n_caches && !obj; i++) {
-			struct yaffs_cache *cache = &mgr->cache[i];
-			if (cache->object && cache->dirty)
-				obj = cache->object;
-		}
-		if (obj)
-			yaffs_flush_file_cache(obj, discard);
+		for (i = 0; i < mgr->n_caches && !obj; i++)
+			if (mgr->cache[i].object && mgr->cache[i].dirty)
+				obj = mgr->cache[i].object;
+		if (obj && yaffs_flush_file_cache(obj, discard) != YAFFS_OK)
+			return YAFFS_FAIL;
 	} while (obj);
-
+	return YAFFS_OK;
 }
 
 /* Grab us an unused cache chunk for use.
@@ -160,12 +141,8 @@ struct yaffs_cache *yaffs_grab_chunk_cache(struct yaffs_dev *dev)
 		}
 	}
 
-#if 1
-	yaffs_flush_single_cache(cache, 1);
-#else
-	yaffs_flush_file_cache(cache->object, 1);
-	cache = yaffs_grab_chunk_worker(dev);
-#endif
+	if (yaffs_flush_single_cache(cache, 1) != YAFFS_OK)
+		return NULL;
 
 	return cache;
 }

@@ -938,7 +938,7 @@ int yaffs_flush_file(struct yaffs_obj *in,
 		     int discard_cache);
 
 /* Flushing and checkpointing */
-void yaffs_flush_whole_cache(struct yaffs_dev *dev, int discard);
+int yaffs_flush_whole_cache(struct yaffs_dev *dev, int discard);
 
 int yaffs_checkpoint_save(struct yaffs_dev *dev);
 int yaffs_checkpoint_restore(struct yaffs_dev *dev);

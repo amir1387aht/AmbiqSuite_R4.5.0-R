@@ -1106,8 +1106,10 @@ static int yaffs_Dofsync(int handle, int datasync)
 	else if (obj->my_dev->read_only)
 		yaffsfs_SetError(-EROFS);
 	else {
-		yaffs_flush_file(obj, 1, datasync, 0);
-		retVal = 0;
+		if (yaffs_flush_file(obj, 1, datasync, 0) == YAFFS_OK)
+			retVal = 0;
+		else
+			yaffsfs_SetError(-EIO);
 	}
 
 	yaffsfs_Unlock();
@@ -1147,10 +1149,11 @@ int yaffs_close(int handle)
 		yaffsfs_SetError(-EBADF);
 	else {
 		/* clean up */
-		if(!f->isDir)
-			yaffs_flush_file(obj, 1, 0, 1);
+		if (!f->isDir && yaffs_flush_file(obj, 1, 0, 1) != YAFFS_OK)
+			yaffsfs_SetError(-EIO);
+		else
+			retVal = 0;
 		yaffsfs_PutHandle(handle);
-		retVal = 0;
 	}
 
 	yaffsfs_Unlock();
@@ -1215,6 +1218,7 @@ static int yaffsfs_do_read(int handle, void *vbuf, unsigned int nbyte,
 		if (pos < 0 || pos > YAFFS_MAX_FILE_SIZE ||
 		    nbyte > YAFFS_MAX_RW_SIZE ||
 		    endPos < 0 || endPos > YAFFS_MAX_FILE_SIZE) {
+			yaffsfs_SetError(-EINVAL);
 			totalRead = -1;
 			nbyte = 0;
 		}
@@ -1235,6 +1239,11 @@ static int yaffsfs_do_read(int handle, void *vbuf, unsigned int nbyte,
 			else
 				nRead = yaffs_file_rd(obj, buf, pos, nToRead);
 
+			if (nRead < 0) {
+				yaffsfs_SetError(-EIO);
+				if (!totalRead)
+					totalRead = -1;
+			}
 			if (nRead > 0) {
 				totalRead += nRead;
 				pos += nRead;
@@ -1258,8 +1267,6 @@ static int yaffsfs_do_read(int handle, void *vbuf, unsigned int nbyte,
 		if (!isPread) {
 			if (totalRead >= 0)
 				fd->v.position = startPos + totalRead;
-			else
-				yaffsfs_SetError(-EINVAL);
 		}
 
 	}
@@ -2953,10 +2960,13 @@ static int yaffs_sync_common(struct yaffs_dev *dev,
 			yaffsfs_SetError(-EROFS);
 		else {
 
-			yaffs_flush_whole_cache(dev, 0);
-			if (do_checkpt)
-				yaffs_checkpoint_save(dev);
-			retVal = 0;
+			if (yaffs_flush_whole_cache(dev, 0) != YAFFS_OK)
+				yaffsfs_SetError(-EIO);
+			else {
+				if (do_checkpt)
+					yaffs_checkpoint_save(dev);
+				retVal = 0;
+			}
 
 		}
 	} else
@@ -3072,9 +3082,9 @@ int yaffs_remount_common(struct yaffs_dev *dev, const YCHAR *path,
 
 	if (dev) {
 		if (dev->is_mounted) {
-			yaffs_flush_whole_cache(dev, 0);
-
-			if (force || !yaffsfs_IsDevBusy(dev)) {
+			if (yaffs_flush_whole_cache(dev, 0) != YAFFS_OK) {
+				yaffsfs_SetError(-EIO);
+			} else if (force || !yaffsfs_IsDevBusy(dev)) {
 				if (read_only)
 					yaffs_checkpoint_save(dev);
 				was_read_only = dev->read_only;
@@ -3130,10 +3140,12 @@ int yaffs_unmount2_common(struct yaffs_dev *dev, const YCHAR *path, int force)
 	if (dev) {
 		if (dev->is_mounted) {
 			int inUse;
-			yaffs_flush_whole_cache(dev, 0);
-			yaffs_checkpoint_save(dev);
+			int flush_ok = yaffs_flush_whole_cache(dev, 0);
 			inUse = yaffsfs_IsDevBusy(dev);
-			if (!inUse || force) {
+			if (flush_ok != YAFFS_OK) {
+				yaffsfs_SetError(-EIO);
+			} else if (!inUse || force) {
+				yaffs_checkpoint_save(dev);
 				if (inUse)
 					yaffsfs_BreakDeviceHandles(dev);
 				yaffs_deinitialise(dev);
@@ -3203,7 +3215,11 @@ int yaffs_format_common(struct yaffs_dev *dev,
 
 		if (dev->is_mounted && unmount_flag) {
 			int inUse;
-			yaffs_flush_whole_cache(dev, 0);
+			if (yaffs_flush_whole_cache(dev, 0) != YAFFS_OK) {
+				yaffsfs_SetError(-EIO);
+				yaffsfs_Unlock();
+				return -1;
+			}
 			yaffs_checkpoint_save(dev);
 			inUse = yaffsfs_IsDevBusy(dev);
 			if (!inUse || force_unmount_flag) {
