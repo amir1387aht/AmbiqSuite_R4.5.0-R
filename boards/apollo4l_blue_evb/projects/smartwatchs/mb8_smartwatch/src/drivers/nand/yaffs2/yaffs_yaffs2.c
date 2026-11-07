@@ -1071,8 +1071,9 @@ int yaffs2_handle_hole(struct yaffs_obj *obj, Y_LOFF_T new_size)
 		yaffs_release_temp_buffer(dev, local_buffer);
 
 		/* If out of space then reverse any chunks we've added */
-		if (!small_increase_ok)
-			yaffs_resize_file_down(obj, old_file_size);
+		if (!small_increase_ok &&
+		    yaffs_resize_file_down(obj, old_file_size) != YAFFS_OK)
+			return YAFFS_FAIL;
 	}
 
 	if (!small_increase_ok &&
@@ -1080,7 +1081,8 @@ int yaffs2_handle_hole(struct yaffs_obj *obj, Y_LOFF_T new_size)
 	    obj->parent->obj_id != YAFFS_OBJECTID_UNLINKED &&
 	    obj->parent->obj_id != YAFFS_OBJECTID_DELETED) {
 		/* Write a hole start header with the old file size */
-		yaffs_update_oh(obj, NULL, 0, 1, 0, NULL);
+		if (yaffs_update_oh(obj, NULL, 0, 1, 0, NULL) < 0)
+			return YAFFS_FAIL;
 	}
 
 	return result;

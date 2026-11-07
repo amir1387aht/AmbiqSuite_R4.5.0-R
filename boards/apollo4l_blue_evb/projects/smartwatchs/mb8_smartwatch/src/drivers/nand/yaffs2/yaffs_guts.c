@@ -3104,6 +3104,12 @@ int yaffs_update_oh(struct yaffs_obj *in, const YCHAR *name, int force,
 		/* Access the old obj header just to read the name. */
 		result = yaffs_rd_chunk_tags_nand(dev, prev_chunk_id,
 						  buffer, &old_tags);
+		if (result != YAFFS_OK) {
+			/* The old name and xattrs are unknown. Never write a header
+			 * built from an unreadable page. */
+			yaffs_release_temp_buffer(dev, buffer);
+			return -1;
+		}
 		if (result == YAFFS_OK) {
 			yaffs_verify_oh(in, oh, &old_tags, 0);
 			memcpy(old_name, oh->name, sizeof(oh->name));
@@ -3508,7 +3514,8 @@ int yaffs_do_file_wr(struct yaffs_obj *in, const u8 *buffer, Y_LOFF_T offset,
 int yaffs_wr_file(struct yaffs_obj *in, const u8 *buffer, Y_LOFF_T offset,
 		  int n_bytes, int write_through)
 {
-	yaffs2_handle_hole(in, offset);
+	if (yaffs2_handle_hole(in, offset) != YAFFS_OK)
+		return 0;
 	return yaffs_do_file_wr(in, buffer, offset, n_bytes, write_through);
 }
 
@@ -3564,7 +3571,7 @@ static void yaffs_prune_chunks(struct yaffs_obj *in, Y_LOFF_T new_size)
 	}
 }
 
-void yaffs_resize_file_down(struct yaffs_obj *obj, Y_LOFF_T new_size)
+int yaffs_resize_file_down(struct yaffs_obj *obj, Y_LOFF_T new_size)
 {
 	int new_full;
 	u32 new_partial;
@@ -3572,27 +3579,31 @@ void yaffs_resize_file_down(struct yaffs_obj *obj, Y_LOFF_T new_size)
 
 	yaffs_addr_to_chunk(dev, new_size, &new_full, &new_partial);
 
-	yaffs_prune_chunks(obj, new_size);
-
 	if (new_partial != 0) {
 		int last_chunk = 1 + new_full;
+		int written;
 		u8 *local_buffer = yaffs_get_temp_buffer(dev);
 
-		/* Rewrite the last chunk with its new size and zero pad */
-		yaffs_rd_data_obj(obj, last_chunk, local_buffer);
+		/* Preserve the existing mapping and size if the surviving chunk
+		 * cannot be read or rewritten. Do not prune first. */
+		if (yaffs_rd_data_obj(obj, last_chunk, local_buffer) != YAFFS_OK) {
+			yaffs_release_temp_buffer(dev, local_buffer);
+			return YAFFS_FAIL;
+		}
 		memset(local_buffer + new_partial, 0,
 		       dev->data_bytes_per_chunk - new_partial);
-
-		yaffs_wr_data_obj(obj, last_chunk, local_buffer,
-				  new_partial, 1);
-
+		written = yaffs_wr_data_obj(obj, last_chunk, local_buffer,
+					    new_partial, 1);
 		yaffs_release_temp_buffer(dev, local_buffer);
+		if (written < 1)
+			return YAFFS_FAIL;
 	}
 
+	yaffs_prune_chunks(obj, new_size);
 	obj->variant.file_variant.file_size = new_size;
 	obj->variant.file_variant.stored_size = new_size;
-
 	yaffs_prune_tree(dev, &obj->variant.file_variant);
+	return YAFFS_OK;
 }
 
 int yaffs_resize_file(struct yaffs_obj *in, Y_LOFF_T new_size)
@@ -3613,11 +3624,13 @@ int yaffs_resize_file(struct yaffs_obj *in, Y_LOFF_T new_size)
 		return YAFFS_OK;
 
 	if (new_size > old_size) {
-		yaffs2_handle_hole(in, new_size);
+		if (yaffs2_handle_hole(in, new_size) != YAFFS_OK)
+			return YAFFS_FAIL;
 		in->variant.file_variant.file_size = new_size;
 	} else {
 		/* new_size < old_size */
-		yaffs_resize_file_down(in, new_size);
+		if (yaffs_resize_file_down(in, new_size) != YAFFS_OK)
+			return YAFFS_FAIL;
 	}
 
 	/* Write a new object header to reflect the resize.
@@ -3628,8 +3641,9 @@ int yaffs_resize_file(struct yaffs_obj *in, Y_LOFF_T new_size)
 	if (in->parent &&
 	    !in->is_shadowed &&
 	    in->parent->obj_id != YAFFS_OBJECTID_UNLINKED &&
-	    in->parent->obj_id != YAFFS_OBJECTID_DELETED)
-		yaffs_update_oh(in, NULL, 0, 0, 0, NULL);
+	    in->parent->obj_id != YAFFS_OBJECTID_DELETED &&
+	    yaffs_update_oh(in, NULL, 0, 0, 0, NULL) < 0)
+		return YAFFS_FAIL;
 
 	return YAFFS_OK;
 }

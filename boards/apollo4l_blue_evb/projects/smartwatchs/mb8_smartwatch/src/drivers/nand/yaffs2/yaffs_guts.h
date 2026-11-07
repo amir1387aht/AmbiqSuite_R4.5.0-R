@@ -1027,7 +1027,7 @@ struct yaffs_tnode *yaffs_add_find_tnode_0(struct yaffs_dev *dev,
 
 int yaffs_do_file_wr(struct yaffs_obj *in, const u8 *buffer, Y_LOFF_T offset,
 		     int n_bytes, int write_trhrough);
-void yaffs_resize_file_down(struct yaffs_obj *obj, Y_LOFF_T new_size);
+int yaffs_resize_file_down(struct yaffs_obj *obj, Y_LOFF_T new_size);
 void yaffs_skip_rest_of_block(struct yaffs_dev *dev);
 
 int yaffs_count_free_chunks(struct yaffs_dev *dev);
