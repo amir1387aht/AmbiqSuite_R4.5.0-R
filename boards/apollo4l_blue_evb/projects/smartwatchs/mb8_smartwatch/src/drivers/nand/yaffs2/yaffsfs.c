@@ -12,6 +12,7 @@
 
 #include "yaffsfs.h"
 #include "yaffs_guts.h"
+#include "yaffs_yaffs2.h"
 #include "yaffscfg.h"
 #include "yportenv.h"
 #include "yaffs_trace.h"
@@ -2930,6 +2931,16 @@ int yaffs_mount(const YCHAR *path)
 	return yaffs_mount_common(NULL, path, 0, 0);
 }
 
+/* A checkpoint is optional for read-only mounts, YAFFS1, small devices and
+ * explicitly disabled checkpoint writes. When required, do not report success
+ * after its save failed; leave the mounted device intact for recovery. */
+static int yaffsfs_save_required_checkpoint(struct yaffs_dev *dev)
+{
+	if (!yaffs2_checkpt_required(dev))
+		return YAFFS_OK;
+	return yaffs_checkpoint_save(dev) ? YAFFS_OK : YAFFS_FAIL;
+}
+
 static int yaffs_sync_common(struct yaffs_dev *dev,
 			     const YCHAR *path,
 			     int do_checkpt)
@@ -2962,11 +2973,11 @@ static int yaffs_sync_common(struct yaffs_dev *dev,
 
 			if (yaffs_flush_whole_cache(dev, 0) != YAFFS_OK)
 				yaffsfs_SetError(-EIO);
-			else {
-				if (do_checkpt)
-					yaffs_checkpoint_save(dev);
+			else if (do_checkpt &&
+				 yaffsfs_save_required_checkpoint(dev) != YAFFS_OK)
+				yaffsfs_SetError(-EIO);
+			else
 				retVal = 0;
-			}
 
 		}
 	} else
@@ -3066,14 +3077,16 @@ int yaffs_remount_common(struct yaffs_dev *dev, const YCHAR *path,
 	int retVal = -1;
 	int was_read_only;
 
-	if (yaffsfs_CheckMemRegion(path, 0, 0) < 0) {
-		yaffsfs_SetError(-EFAULT);
-		return -1;
-	}
+	if (!dev) {
+		if (yaffsfs_CheckMemRegion(path, 0, 0) < 0) {
+			yaffsfs_SetError(-EFAULT);
+			return -1;
+		}
 
-	if (yaffsfs_CheckPath(path) < 0) {
-		yaffsfs_SetError(-ENAMETOOLONG);
-		return -1;
+		if (yaffsfs_CheckPath(path) < 0) {
+			yaffsfs_SetError(-ENAMETOOLONG);
+			return -1;
+		}
 	}
 
 	yaffsfs_Lock();
@@ -3085,8 +3098,12 @@ int yaffs_remount_common(struct yaffs_dev *dev, const YCHAR *path,
 			if (yaffs_flush_whole_cache(dev, 0) != YAFFS_OK) {
 				yaffsfs_SetError(-EIO);
 			} else if (force || !yaffsfs_IsDevBusy(dev)) {
-				if (read_only)
-					yaffs_checkpoint_save(dev);
+				if (read_only &&
+				    yaffsfs_save_required_checkpoint(dev) != YAFFS_OK) {
+					yaffsfs_SetError(-EIO);
+					yaffsfs_Unlock();
+					return -1;
+				}
 				was_read_only = dev->read_only;
 				dev->read_only = read_only ? 1 : 0;
 				if (was_read_only && !read_only) {
@@ -3145,7 +3162,11 @@ int yaffs_unmount2_common(struct yaffs_dev *dev, const YCHAR *path, int force)
 			if (flush_ok != YAFFS_OK) {
 				yaffsfs_SetError(-EIO);
 			} else if (!inUse || force) {
-				yaffs_checkpoint_save(dev);
+				if (yaffsfs_save_required_checkpoint(dev) != YAFFS_OK) {
+					yaffsfs_SetError(-EIO);
+					yaffsfs_Unlock();
+					return -1;
+				}
 				if (inUse)
 					yaffsfs_BreakDeviceHandles(dev);
 				yaffs_deinitialise(dev);
@@ -3220,7 +3241,11 @@ int yaffs_format_common(struct yaffs_dev *dev,
 				yaffsfs_Unlock();
 				return -1;
 			}
-			yaffs_checkpoint_save(dev);
+			if (yaffsfs_save_required_checkpoint(dev) != YAFFS_OK) {
+				yaffsfs_SetError(-EIO);
+				yaffsfs_Unlock();
+				return -1;
+			}
 			inUse = yaffsfs_IsDevBusy(dev);
 			if (!inUse || force_unmount_flag) {
 				if (inUse)

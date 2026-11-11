@@ -844,6 +844,7 @@ static int yaffs2_rd_checkpt_sum(struct yaffs_dev *dev)
 static int yaffs2_wr_checkpt_data(struct yaffs_dev *dev)
 {
 	int ok = 1;
+	int opened = 0;
 
 	if (!yaffs2_checkpt_required(dev)) {
 		yaffs_trace(YAFFS_TRACE_CHECKPOINT,
@@ -851,8 +852,10 @@ static int yaffs2_wr_checkpt_data(struct yaffs_dev *dev)
 		ok = 0;
 	}
 
-	if (ok)
+	if (ok) {
 		ok = yaffs2_checkpt_open(dev, 1);
+		opened = ok;
+	}
 
 	if (ok) {
 		yaffs_trace(YAFFS_TRACE_CHECKPOINT,
@@ -878,7 +881,7 @@ static int yaffs2_wr_checkpt_data(struct yaffs_dev *dev)
 	if (ok)
 		ok = yaffs2_wr_checkpt_sum(dev);
 
-	if (!yaffs_checkpt_close(dev))
+	if (opened && !yaffs_checkpt_close(dev))
 		ok = 0;
 
 	if (ok)

@@ -6,9 +6,16 @@
 #include <string.h>
 #include "yaffs_guts.c" /* Exercise the real internal GC path. */
 #include "yaffs_bitmap.h"
+#include "yaffsfs.h"
+#include "yaffs_checkptrw.h"
 
 static int last_error;
 static unsigned erased;
+static int checkpoint_result, checkpoint_calls, deinit_calls;
+int __wrap_yaffs_checkpoint_save(struct yaffs_dev *dev)
+{ (void)dev; checkpoint_calls++; return checkpoint_result; }
+void __wrap_yaffs_deinitialise(struct yaffs_dev *dev)
+{ deinit_calls++; dev->is_mounted = 0; }
 void yaffsfs_Lock(void) {}
 void yaffsfs_Unlock(void) {}
 u32 yaffsfs_CurrentTime(void) { return 0; }
@@ -109,11 +116,110 @@ static void test_write_failure_keeps_cache(void)
     assert(obj.variant.file_variant.file_size == 8);
 }
 
+/* Drive the actual direct API with a synthetic mounted device. Linker wrappers
+ * inject checkpoint outcomes and prevent device teardown; no NAND is touched. */
+static void test_checkpoint_propagation(void)
+{
+    struct yaffs_dev dev = {0};
+    dev.is_mounted = 1;
+    dev.param.is_yaffs2 = 1;
+    dev.internal_start_block = 1;
+    dev.internal_end_block = 100;
+    checkpoint_calls = deinit_calls = last_error = 0;
+    checkpoint_result = YAFFS_FAIL;
+    assert(yaffs_sync_reldev(&dev) == -1 && last_error == -EIO);
+    assert(checkpoint_calls == 1 && dev.is_mounted);
+    last_error = 0;
+    assert(yaffs_unmount2_reldev(&dev, 0) == -1 && last_error == -EIO);
+    assert(dev.is_mounted && deinit_calls == 0);
+    assert(yaffs_unmount2_reldev(&dev, 1) == -1 && dev.is_mounted && deinit_calls == 0);
+    assert(yaffs_sync_files_reldev(&dev) == 0); /* no checkpoint requested */
+    last_error = 0;
+    assert(yaffs_remount_reldev(&dev, 0, 1) == -1 && last_error == -EIO);
+    assert(!dev.read_only && dev.is_mounted);
+
+    checkpoint_result = YAFFS_OK;
+    assert(yaffs_sync_reldev(&dev) == 0);
+    assert(yaffs_remount_reldev(&dev, 0, 1) == 0 && dev.read_only);
+    checkpoint_calls = 0;
+    assert(yaffs_unmount2_reldev(&dev, 0) == 0);
+    assert(checkpoint_calls == 0 && deinit_calls == 1);
+
+    /* Skipped or inapplicable checkpoints are not errors and do not write. */
+    dev.is_mounted = 1; dev.read_only = 0; dev.param.skip_checkpt_wr = 1;
+    checkpoint_calls = 0; checkpoint_result = YAFFS_FAIL;
+    assert(yaffs_sync_reldev(&dev) == 0 && checkpoint_calls == 0);
+    assert(yaffs_unmount2_reldev(&dev, 0) == 0 && checkpoint_calls == 0);
+    dev.is_mounted = 1; dev.param.skip_checkpt_wr = 0;
+    dev.internal_end_block = 10; /* less than YAFFS_CHECKPOINT_MIN_BLOCKS */
+    assert(yaffs_sync_reldev(&dev) == 0 && checkpoint_calls == 0);
+}
+
+static int checkpoint_programs;
+static int fail_checkpoint_program(struct yaffs_dev *dev, int page, const u8 *data,
+                                   const struct yaffs_ext_tags *tags)
+{ (void)dev; (void)page; (void)data; (void)tags; checkpoint_programs++; return YAFFS_FAIL; }
+
+static int ok_checkpoint_program(struct yaffs_dev *dev, int page, const u8 *data,
+                                 const struct yaffs_ext_tags *tags)
+{ (void)dev; (void)page; (void)data; (void)tags; checkpoint_programs++; return YAFFS_OK; }
+
+static void test_checkpoint_program_failure(void)
+{
+    struct yaffs_dev dev = {0};
+    struct yaffs_block_info block = {0};
+    u8 buffer[64] = {0}, byte = 42;
+    dev.internal_start_block = dev.internal_end_block = 1;
+    dev.param.chunks_per_block = 64;
+    dev.data_bytes_per_chunk = sizeof(buffer);
+    dev.block_info = &block;
+    block.block_state = YAFFS_BLOCK_STATE_EMPTY;
+    dev.n_erased_blocks = 1;
+    dev.n_free_chunks = 64;
+    dev.checkpt_next_block = 1;
+    dev.checkpt_cur_block = -1;
+    dev.checkpt_buffer = buffer;
+    dev.checkpt_open_write = 1;
+    dev.checkpt_byte_offs = 63;
+    dev.tagger.write_chunk_tags_fn = fail_checkpoint_program;
+    checkpoint_programs = 0;
+    /* Filling the last byte must not hide an unsuccessful page program. */
+    assert(yaffs2_checkpt_wr(&dev, &byte, 1) < 0);
+    assert(checkpoint_programs == 1);
+    assert(yaffs_checkpt_close(&dev) == 0 && checkpoint_programs == 1);
+
+    memset(&dev, 0, sizeof(dev)); memset(&block, 0, sizeof(block));
+    dev.internal_start_block = dev.internal_end_block = 1;
+    dev.param.chunks_per_block = 64; dev.data_bytes_per_chunk = sizeof(buffer);
+    dev.block_info = &block; block.block_state = YAFFS_BLOCK_STATE_EMPTY;
+    dev.n_erased_blocks = 1; dev.n_free_chunks = 64;
+    dev.checkpt_next_block = 1; dev.checkpt_cur_block = -1;
+    dev.checkpt_buffer = buffer; dev.checkpt_open_write = 1;
+    dev.checkpt_byte_offs = 17; /* final partially filled page */
+    dev.tagger.write_chunk_tags_fn = fail_checkpoint_program;
+    checkpoint_programs = 0;
+    assert(yaffs_checkpt_close(&dev) == 0 && checkpoint_programs == 1);
+
+    memset(&dev, 0, sizeof(dev)); memset(&block, 0, sizeof(block));
+    dev.internal_start_block = dev.internal_end_block = 1;
+    dev.param.chunks_per_block = 64; dev.data_bytes_per_chunk = sizeof(buffer);
+    dev.block_info = &block; block.block_state = YAFFS_BLOCK_STATE_EMPTY;
+    dev.n_erased_blocks = 1; dev.n_free_chunks = 64;
+    dev.checkpt_next_block = 1; dev.checkpt_cur_block = -1;
+    dev.checkpt_buffer = buffer; dev.checkpt_open_write = 1;
+    dev.checkpt_byte_offs = 63; dev.tagger.write_chunk_tags_fn = ok_checkpoint_program;
+    checkpoint_programs = 0;
+    assert(yaffs2_checkpt_wr(&dev, &byte, 1) == 1 && checkpoint_programs == 1);
+    assert(yaffs_checkpt_close(&dev) == 1 && checkpoint_programs == 1);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 1 || strcmp(argv[1], "tags") == 0) test_failed_tag_read();
     if (argc == 1 || strcmp(argv[1], "gc") == 0) test_failed_gc_read();
     if (argc == 1 || strcmp(argv[1], "write") == 0) test_write_failure_keeps_cache();
+    if (argc == 1 || strcmp(argv[1], "checkpoint") == 0) test_checkpoint_propagation();
+    if (argc == 1 || strcmp(argv[1], "checkpoint-io") == 0) test_checkpoint_program_failure();
     puts("YAFFS fault tests passed");
     return 0;
 }

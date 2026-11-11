@@ -212,6 +212,7 @@ int yaffs2_checkpt_open(struct yaffs_dev *dev, int writing)
 	u32 i;
 
 	dev->checkpt_open_write = writing;
+	dev->checkpt_write_failed = 0;
 
 	/* Got the functions we need? */
 	if (!dev->tagger.write_chunk_tags_fn ||
@@ -287,6 +288,7 @@ static int yaffs2_checkpt_flush_buffer(struct yaffs_dev *dev)
 	if (dev->checkpt_cur_block < 0)
 		return 0;
 
+	memset(&tags, 0, sizeof(tags));
 	tags.is_deleted = 0;
 	tags.obj_id = dev->checkpt_next_block;	/* Hint to next place to look */
 	tags.chunk_id = dev->checkpt_page_seq + 1;
@@ -314,8 +316,11 @@ static int yaffs2_checkpt_flush_buffer(struct yaffs_dev *dev)
 
 	dev->n_page_writes++;
 
-	dev->tagger.write_chunk_tags_fn(dev, offset_chunk,
-				       dev->checkpt_buffer, &tags);
+	if (dev->tagger.write_chunk_tags_fn(dev, offset_chunk,
+					   dev->checkpt_buffer, &tags) != YAFFS_OK) {
+		dev->checkpt_write_failed = 1;
+		return 0;
+	}
 	dev->checkpt_page_seq++;
 	dev->checkpt_cur_chunk++;
 	if (dev->checkpt_cur_chunk >= (int)dev->param.chunks_per_block) {
@@ -339,7 +344,7 @@ int yaffs2_checkpt_wr(struct yaffs_dev *dev, const void *data, int n_bytes)
 	if (!dev->checkpt_buffer)
 		return 0;
 
-	if (!dev->checkpt_open_write)
+	if (!dev->checkpt_open_write || dev->checkpt_write_failed)
 		return -1;
 
 	while (i < n_bytes && ok) {
@@ -357,6 +362,10 @@ int yaffs2_checkpt_wr(struct yaffs_dev *dev, const void *data, int n_bytes)
 			ok = yaffs2_checkpt_flush_buffer(dev);
 	}
 
+	if (!ok) {
+		dev->checkpt_write_failed = 1;
+		return -1;
+	}
 	return i;
 }
 
@@ -437,9 +446,10 @@ int yaffs_checkpt_close(struct yaffs_dev *dev)
 	u32 i;
 
 	if (dev->checkpt_open_write) {
-		if (dev->checkpt_byte_offs !=
-			sizeof(struct yaffs_checkpt_chunk_hdr))
-			yaffs2_checkpt_flush_buffer(dev);
+		if (!dev->checkpt_write_failed && dev->checkpt_buffer &&
+		    dev->checkpt_byte_offs != sizeof(struct yaffs_checkpt_chunk_hdr) &&
+		    !yaffs2_checkpt_flush_buffer(dev))
+			dev->checkpt_write_failed = 1;
 	} else if (dev->checkpt_block_list) {
 		for (i = 0;
 		     i < dev->blocks_in_checkpt &&
@@ -462,10 +472,7 @@ int yaffs_checkpt_close(struct yaffs_dev *dev)
 	yaffs_trace(YAFFS_TRACE_CHECKPOINT, "checkpoint byte count %d",
 		dev->checkpt_byte_count);
 
-	if (dev->checkpt_buffer)
-		return 1;
-	else
-		return 0;
+	return dev->checkpt_buffer && !dev->checkpt_write_failed;
 }
 
 int yaffs2_checkpt_invalidate_stream(struct yaffs_dev *dev)

@@ -599,3 +599,24 @@ is intentionally unconfigured and fails before the bus is opened; all existing
 layout, partition, write and destructive-boot authorization gates remain.
 This is not an on-flash partition format, a stock-layout detector, a formatter,
 or a multi-volume mount implementation. No physical layout has been confirmed.
+
+WIP CHECKPOINT WRITE FAILURE HARDENING (2026-11-11)
+Host fault tests now cover checkpoint page-program failures both exactly on a
+page boundary and during final partial-page flush. A failure is latched; a
+failed page is not implicitly retried by close and checkpoint save is not
+reported successful. The direct sync/unmount/read-only-remount/format paths
+now report EIO when a required checkpoint save fails, and unmount/remount leave
+the mounted device intact in that case. Where YAFFS does not require a
+checkpoint (read-only, YAFFS1, small partition or skip_checkpt_wr), no save is
+attempted and its absence is not treated as an I/O error. File-sync-only still
+does not request a checkpoint. Relative-device remount accepts a device without
+a path. A failed checkpoint-open is not followed by an unintended close/flush.
+
+Host tests use synthetic YAFFS state, injected callbacks and wrapped API save
+outcomes; no hardware NAND was written and they are not a simulated end-to-end
+checkpoint recovery. They do not qualify sync durability, checkpoint erase or
+restore failures, power interruption, other metadata paths, or garbage
+collection. Default and read-only startup configurations were ARM built.
+Do not infer stock partition ownership, authorize writes, or call the branch
+production-ready from these changes. Power-cut and on-device tests still need
+explicitly authorized, backed-up test media.

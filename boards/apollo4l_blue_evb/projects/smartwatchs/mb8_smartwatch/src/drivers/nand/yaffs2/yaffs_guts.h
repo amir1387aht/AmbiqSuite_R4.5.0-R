@@ -696,6 +696,7 @@ struct yaffs_dev {
 	int checkpt_byte_offs;
 	u8 *checkpt_buffer;
 	int checkpt_open_write;
+	int checkpt_write_failed; /* latched until next checkpoint open */
 	u32 blocks_in_checkpt;
 	int checkpt_cur_chunk;
 	int checkpt_cur_block;
