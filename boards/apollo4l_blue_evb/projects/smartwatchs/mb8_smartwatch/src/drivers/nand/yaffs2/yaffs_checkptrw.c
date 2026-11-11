@@ -88,8 +88,12 @@ static int yaffs_checkpt_erase(struct yaffs_dev *dev)
 {
 	u32 i;
 
-	if (!dev->drv.drv_erase_fn)
-		return 0;
+	if (dev->checkpt_erase_failed || dev->read_only)
+		return YAFFS_FAIL;
+	if (!dev->drv.drv_erase_fn) {
+		dev->checkpt_erase_failed = 1;
+		return YAFFS_FAIL;
+	}
 	yaffs_trace(YAFFS_TRACE_CHECKPOINT,
 		"checking blocks %d to %d",
 		dev->internal_start_block, dev->internal_end_block);
@@ -106,15 +110,17 @@ static int yaffs_checkpt_erase(struct yaffs_dev *dev)
 			dev->n_erasures++;
 
 			result = dev->drv.drv_erase_fn(dev, offset_i);
-			if(result) {
-				bi->block_state = YAFFS_BLOCK_STATE_EMPTY;
-				dev->n_erased_blocks++;
-				dev->n_free_chunks +=
-				    dev->param.chunks_per_block;
-			} else {
-				dev->drv.drv_mark_bad_fn(dev, offset_i);
-				bi->block_state = YAFFS_BLOCK_STATE_DEAD;
+			if (result != YAFFS_OK) {
+				/* An I/O failure is not proof of a bad block. Keep its
+				 * state and stop; never erase/mark other blocks here. */
+				dev->checkpt_erase_failed = 1;
+				return YAFFS_FAIL;
 			}
+			bi->block_state = YAFFS_BLOCK_STATE_EMPTY;
+			dev->n_erased_blocks++;
+			dev->n_free_chunks += dev->param.chunks_per_block;
+			if (dev->blocks_in_checkpt > 0)
+				dev->blocks_in_checkpt--;
 		}
 	}
 

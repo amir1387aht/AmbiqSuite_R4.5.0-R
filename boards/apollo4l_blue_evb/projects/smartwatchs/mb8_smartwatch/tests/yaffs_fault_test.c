@@ -11,11 +11,13 @@
 
 static int last_error;
 static unsigned erased;
-static int checkpoint_result, checkpoint_calls, deinit_calls;
+static int checkpoint_result, checkpoint_calls, deinit_calls, cleanup_fails;
 int __wrap_yaffs_checkpoint_save(struct yaffs_dev *dev)
 { (void)dev; checkpoint_calls++; return checkpoint_result; }
 void __wrap_yaffs_deinitialise(struct yaffs_dev *dev)
 { deinit_calls++; dev->is_mounted = 0; }
+void __wrap_yaffs_guts_cleanup(struct yaffs_dev *dev)
+{ if (cleanup_fails) dev->checkpt_erase_failed = 1; }
 void yaffsfs_Lock(void) {}
 void yaffsfs_Unlock(void) {}
 u32 yaffsfs_CurrentTime(void) { return 0; }
@@ -281,6 +283,108 @@ static void test_checkpoint_read_failure(void)
     assert(yaffs2_checkpt_restore(&dev) == 0 && checkpoint_programs == 0);
 }
 
+static int erase_calls, mark_calls, erase_first_success;
+static int checkpoint_erase_mock(struct yaffs_dev *dev, int block)
+{
+    (void)dev; (void)block;
+    erase_calls++;
+    return (erase_first_success && erase_calls == 1) ? YAFFS_OK : YAFFS_FAIL;
+}
+static int checkpoint_mark_mock(struct yaffs_dev *dev, int block)
+{ (void)dev; (void)block; mark_calls++; return YAFFS_FAIL; }
+static void test_checkpoint_erase_failure(void)
+{
+    for (erase_first_success = 0; erase_first_success <= 1; erase_first_success++) {
+        struct yaffs_dev dev = {0};
+        struct yaffs_block_info blocks[2] = {0};
+        dev.internal_start_block = 1; dev.internal_end_block = 2;
+        dev.param.chunks_per_block = 64; dev.block_info = blocks;
+        blocks[0].block_state = blocks[1].block_state = YAFFS_BLOCK_STATE_CHECKPOINT;
+        dev.blocks_in_checkpt = 2;
+        dev.drv.drv_erase_fn = checkpoint_erase_mock;
+        dev.drv.drv_mark_bad_fn = checkpoint_mark_mock;
+        erase_calls = mark_calls = 0;
+        assert(yaffs2_checkpt_invalidate_stream(&dev) == YAFFS_FAIL);
+        assert(erase_calls == (erase_first_success ? 2 : 1));
+        assert(mark_calls == 0);
+        assert(blocks[0].block_state == (erase_first_success ?
+                YAFFS_BLOCK_STATE_EMPTY : YAFFS_BLOCK_STATE_CHECKPOINT));
+        assert(blocks[1].block_state == YAFFS_BLOCK_STATE_CHECKPOINT);
+        assert(dev.blocks_in_checkpt == (unsigned)(erase_first_success ? 1 : 2));
+        assert(dev.n_free_chunks == (erase_first_success ? 64 : 0));
+        assert(dev.n_erased_blocks == (erase_first_success ? 1 : 0));
+        /* Do not retry after an ambiguous erase error on this mount. */
+        int calls = erase_calls;
+        assert(yaffs2_checkpt_invalidate_stream(&dev) == YAFFS_FAIL);
+        assert(erase_calls == calls && mark_calls == 0);
+    }
+}
+
+static void test_checkpoint_erase_propagation(void)
+{
+    struct yaffs_dev dev = {0};
+    struct yaffs_block_info blocks[2] = {0};
+    struct yaffs_ext_tags tags = {0};
+    u8 data[64] = {0};
+    dev.internal_start_block = 1; dev.internal_end_block = 2;
+    dev.param.chunks_per_block = 64; dev.block_info = blocks;
+    dev.blocks_in_checkpt = 1; dev.is_checkpointed = 1;
+    blocks[0].block_state = YAFFS_BLOCK_STATE_CHECKPOINT;
+    blocks[1].block_state = YAFFS_BLOCK_STATE_FULL;
+    dev.drv.drv_erase_fn = checkpoint_erase_mock;
+    dev.drv.drv_mark_bad_fn = checkpoint_mark_mock;
+    dev.tagger.write_chunk_tags_fn = fail_checkpoint_program;
+    erase_first_success = erase_calls = mark_calls = checkpoint_programs = 0;
+    assert(yaffs_write_new_chunk(&dev, data, &tags, 0) == -1);
+    assert(erase_calls == 1 && checkpoint_programs == 0 && mark_calls == 0);
+    assert(!dev.is_checkpointed && dev.blocks_in_checkpt == 1);
+    assert(blocks[0].block_state == YAFFS_BLOCK_STATE_CHECKPOINT);
+    yaffs_block_became_dirty(&dev, 2);
+    assert(blocks[1].block_state == YAFFS_BLOCK_STATE_FULL);
+    assert(erase_calls == 1 && checkpoint_programs == 0 && mark_calls == 0);
+    assert(yaffs2_checkpt_invalidate(&dev) == YAFFS_FAIL && erase_calls == 1);
+
+    /* A read-only mount never erases checkpoint blocks and can later remount. */
+    memset(&dev, 0, sizeof(dev)); memset(blocks, 0, sizeof(blocks));
+    dev.internal_start_block = 1; dev.internal_end_block = 2;
+    dev.param.chunks_per_block = 64; dev.block_info = blocks;
+    dev.read_only = 1; dev.blocks_in_checkpt = 1; dev.is_checkpointed = 1;
+    blocks[0].block_state = YAFFS_BLOCK_STATE_CHECKPOINT;
+    dev.drv.drv_erase_fn = checkpoint_erase_mock;
+    erase_calls = 0; erase_first_success = 1;
+    assert(yaffs2_checkpt_invalidate(&dev) == YAFFS_FAIL);
+    assert(erase_calls == 0 && dev.is_checkpointed && dev.blocks_in_checkpt == 1);
+    assert(!dev.checkpt_erase_failed);
+    dev.read_only = 0;
+    assert(yaffs2_checkpt_invalidate(&dev) == YAFFS_OK);
+    assert(erase_calls == 1 && dev.blocks_in_checkpt == 0 && !dev.is_checkpointed);
+    assert(blocks[0].block_state == YAFFS_BLOCK_STATE_EMPTY);
+}
+
+static void test_checkpoint_erase_api_reporting(void)
+{
+    struct yaffs_dev dev = {0};
+    dev.is_mounted = 1; dev.param.is_yaffs2 = 1; dev.param.skip_checkpt_wr = 1;
+    dev.checkpt_erase_failed = 1; checkpoint_calls = deinit_calls = 0;
+    last_error = 0;
+    assert(yaffs_sync_files_reldev(&dev) == -1 && last_error == -EIO);
+    last_error = 0;
+    assert(yaffs_sync_reldev(&dev) == -1 && last_error == -EIO);
+    assert(checkpoint_calls == 0);
+    last_error = 0;
+    assert(yaffs_unmount2_reldev(&dev, 0) == -1 && last_error == -EIO);
+    assert(dev.is_mounted && deinit_calls == 0);
+    last_error = 0;
+    assert(yaffs_remount_reldev(&dev, 0, 1) == -1 && last_error == -EIO);
+
+    /* Simulate cleanup failing as a read-only mount transitions to writable. */
+    dev.checkpt_erase_failed = 0; dev.read_only = 1; cleanup_fails = 1;
+    last_error = 0;
+    assert(yaffs_remount_reldev(&dev, 0, 0) == -1 && last_error == -EIO);
+    assert(dev.read_only && dev.checkpt_erase_failed && dev.is_mounted);
+    cleanup_fails = 0;
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 1 || strcmp(argv[1], "tags") == 0) test_failed_tag_read();
@@ -289,6 +393,9 @@ int main(int argc, char **argv)
     if (argc == 1 || strcmp(argv[1], "checkpoint") == 0) test_checkpoint_propagation();
     if (argc == 1 || strcmp(argv[1], "checkpoint-io") == 0) test_checkpoint_program_failure();
     if (argc == 1 || strcmp(argv[1], "checkpoint-read") == 0) test_checkpoint_read_failure();
+    if (argc == 1 || strcmp(argv[1], "checkpoint-erase") == 0) test_checkpoint_erase_failure();
+    if (argc == 1 || strcmp(argv[1], "checkpoint-erase-api") == 0) test_checkpoint_erase_propagation();
+    if (argc == 1 || strcmp(argv[1], "checkpoint-erase-report") == 0) test_checkpoint_erase_api_reporting();
     puts("YAFFS fault tests passed");
     return 0;
 }

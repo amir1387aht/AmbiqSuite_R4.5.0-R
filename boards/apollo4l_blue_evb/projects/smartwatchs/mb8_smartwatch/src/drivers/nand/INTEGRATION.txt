@@ -633,3 +633,26 @@ Host tests inject discovery/query/page callback failures and exercise a valid
 synthetic checkpoint page, no-checkpoint and skipped-restore cases. Both
 normal and read-only startup ARM configurations compile. Tests do not provide
 end-to-end reboot or power-cut coverage and do not prove hardware behavior.
+
+WIP CHECKPOINT ERASE FAILURE HARDENING (2026-11-11)
+An unsuccessful checkpoint-block erase is no longer reported as success and
+is not automatically converted into a bad-block marker. The first failure
+stops the erase walk, preserves the failed and unvisited block states, latches
+an error until a new mount, and prevents chunk programming or GC retirement
+through checkpoint invalidation. Completed erases update the checkpoint count
+and free-space counters. Sync and required-checkpoint unmount report failure;
+remount to writable returns EIO and stays read-only if cleanup latches this
+error. Read-only mount defers aborted-checkpoint erasure entirely. This is a
+conservative ambiguous-I/O policy, not a complete physical bad-block policy.
+Host fault injection covers first/partial erase failure, no automatic retries
+or marking, read-only defer, successful erase, stopped chunk allocation, and
+API error propagation. ARM default, read-only startup and 48 MHz write-trace
+configurations compile; compiling a trace build is not hardware testing and
+it was NOT flashed. No on-device writes were authorized or performed here.
+
+Prior hardware evidence: commit 8c31519 describes the 48 MHz full-page quad
+program load with serial cache-prefix repair as on-watch-tested. An earlier
+48 MHz program/readback had a wrong first byte. The original test logs and
+full pass/fail scope are not present in this repository's recorded notes;
+do not discard the earlier test evidence or claim it validates the latest
+filesystem changes, every page, power-fail behavior, or partition ownership.

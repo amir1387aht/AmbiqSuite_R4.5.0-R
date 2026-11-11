@@ -12,5 +12,5 @@ for src in "$yaffs"/*.c; do
     [ "${src##*/}" = yaffs_guts.c ] && continue
     cc $flags $defs -D'Y_LOFF_T=long long' -I"$yaffs" -c "$src" -o "$out/${src##*/}.o"
 done
-cc $flags $defs -D'Y_LOFF_T=long long' -I"$yaffs" "$base/tests/yaffs_fault_test.c" "$out"/*.o -Wl,--gc-sections,--wrap=yaffs_checkpoint_save,--wrap=yaffs_deinitialise -o "$out/yaffs_fault_test"
+cc $flags $defs -D'Y_LOFF_T=long long' -I"$yaffs" "$base/tests/yaffs_fault_test.c" "$out"/*.o -Wl,--gc-sections,--wrap=yaffs_checkpoint_save,--wrap=yaffs_deinitialise,--wrap=yaffs_guts_cleanup -o "$out/yaffs_fault_test"
 "$out/yaffs_fault_test" "$@"

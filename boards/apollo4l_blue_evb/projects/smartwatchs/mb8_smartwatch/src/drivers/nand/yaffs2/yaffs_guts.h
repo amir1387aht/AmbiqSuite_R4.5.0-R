@@ -698,6 +698,7 @@ struct yaffs_dev {
 	int checkpt_open_write;
 	int checkpt_write_failed; /* latched until next checkpoint open */
 	int checkpt_read_failed;  /* likewise for checkpoint recovery */
+	int checkpt_erase_failed; /* stop writes until mount is reinitialized */
 	u32 blocks_in_checkpt;
 	int checkpt_cur_chunk;
 	int checkpt_cur_block;

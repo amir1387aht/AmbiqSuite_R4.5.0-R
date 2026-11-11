@@ -2936,6 +2936,8 @@ int yaffs_mount(const YCHAR *path)
  * after its save failed; leave the mounted device intact for recovery. */
 static int yaffsfs_save_required_checkpoint(struct yaffs_dev *dev)
 {
+	if (dev->checkpt_erase_failed)
+		return YAFFS_FAIL;
 	if (!yaffs2_checkpt_required(dev))
 		return YAFFS_OK;
 	return yaffs_checkpoint_save(dev) ? YAFFS_OK : YAFFS_FAIL;
@@ -2971,7 +2973,8 @@ static int yaffs_sync_common(struct yaffs_dev *dev,
 			yaffsfs_SetError(-EROFS);
 		else {
 
-			if (yaffs_flush_whole_cache(dev, 0) != YAFFS_OK)
+			if (dev->checkpt_erase_failed ||
+			    yaffs_flush_whole_cache(dev, 0) != YAFFS_OK)
 				yaffsfs_SetError(-EIO);
 			else if (do_checkpt &&
 				 yaffsfs_save_required_checkpoint(dev) != YAFFS_OK)
@@ -3095,7 +3098,8 @@ int yaffs_remount_common(struct yaffs_dev *dev, const YCHAR *path,
 
 	if (dev) {
 		if (dev->is_mounted) {
-			if (yaffs_flush_whole_cache(dev, 0) != YAFFS_OK) {
+			if (dev->checkpt_erase_failed ||
+			    yaffs_flush_whole_cache(dev, 0) != YAFFS_OK) {
 				yaffsfs_SetError(-EIO);
 			} else if (force || !yaffsfs_IsDevBusy(dev)) {
 				if (read_only &&
@@ -3108,6 +3112,12 @@ int yaffs_remount_common(struct yaffs_dev *dev, const YCHAR *path,
 				dev->read_only = read_only ? 1 : 0;
 				if (was_read_only && !read_only) {
 					yaffs_guts_cleanup(dev);
+					if (dev->checkpt_erase_failed) {
+						dev->read_only = 1;
+						yaffsfs_SetError(-EIO);
+						yaffsfs_Unlock();
+						return -1;
+					}
 				}
 				retVal = 0;
 			} else

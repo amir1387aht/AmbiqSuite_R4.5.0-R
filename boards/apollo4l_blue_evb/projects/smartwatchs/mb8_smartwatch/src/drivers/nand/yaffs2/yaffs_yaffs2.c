@@ -949,14 +949,20 @@ static int yaffs2_rd_checkpt_data(struct yaffs_dev *dev)
 	return ok ? 1 : 0;
 }
 
-void yaffs2_checkpt_invalidate(struct yaffs_dev *dev)
+int yaffs2_checkpt_invalidate(struct yaffs_dev *dev)
 {
+	if (dev->checkpt_erase_failed)
+		return YAFFS_FAIL;
 	if (dev->is_checkpointed || dev->blocks_in_checkpt > 0) {
+		if (dev->read_only)
+			return YAFFS_FAIL;
 		dev->is_checkpointed = 0;
-		yaffs2_checkpt_invalidate_stream(dev);
+		if (yaffs2_checkpt_invalidate_stream(dev) != YAFFS_OK)
+			return YAFFS_FAIL;
 	}
 	if (dev->param.sb_dirty_fn)
 		dev->param.sb_dirty_fn(dev);
+	return YAFFS_OK;
 }
 
 int yaffs_checkpoint_save(struct yaffs_dev *dev)
@@ -969,8 +975,11 @@ int yaffs_checkpoint_save(struct yaffs_dev *dev)
 	yaffs_verify_blocks(dev);
 	yaffs_verify_free_chunks(dev);
 
+	if (dev->checkpt_erase_failed)
+		return YAFFS_FAIL;
 	if (!dev->is_checkpointed) {
-		yaffs2_checkpt_invalidate(dev);
+		if (yaffs2_checkpt_invalidate(dev) != YAFFS_OK)
+			return YAFFS_FAIL;
 		yaffs2_wr_checkpt_data(dev);
 	}
 

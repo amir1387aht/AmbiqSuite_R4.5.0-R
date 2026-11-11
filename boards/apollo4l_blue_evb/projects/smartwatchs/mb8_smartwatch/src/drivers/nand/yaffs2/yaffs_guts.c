@@ -496,7 +496,8 @@ static int yaffs_write_new_chunk(struct yaffs_dev *dev,
 	int write_ok = 0;
 	int chunk;
 
-	yaffs2_checkpt_invalidate(dev);
+	if (yaffs2_checkpt_invalidate(dev) != YAFFS_OK)
+		return -1;
 
 	do {
 		struct yaffs_block_info *bi = NULL;
@@ -605,7 +606,8 @@ static void yaffs_retire_block(struct yaffs_dev *dev, int flash_block)
 {
 	struct yaffs_block_info *bi = yaffs_get_block_info(dev, flash_block);
 
-	yaffs2_checkpt_invalidate(dev);
+	if (yaffs2_checkpt_invalidate(dev) != YAFFS_OK)
+		return;
 
 	yaffs2_clear_oldest_dirty_seq(dev, bi);
 
@@ -2150,7 +2152,7 @@ void yaffs_block_became_dirty(struct yaffs_dev *dev, int block_no)
 
 	/* A read-only mount must never turn an erase refusal into block
 	 * retirement, including when this is called from a scan cleanup path. */
-	if (dev->read_only)
+	if (dev->read_only || yaffs2_checkpt_invalidate(dev) != YAFFS_OK)
 		return;
 
 	/* If the block is still healthy erase it and mark as clean.
@@ -2178,7 +2180,6 @@ void yaffs_block_became_dirty(struct yaffs_dev *dev, int block_no)
 	}
 
 	if (!bi->needs_retiring) {
-		yaffs2_checkpt_invalidate(dev);
 		erased_ok = yaffs_erase_block(dev, block_no);
 		if (!erased_ok) {
 			dev->n_erase_failures++;
@@ -4672,6 +4673,7 @@ int yaffs_guts_initialise(struct yaffs_dev *dev)
 	}
 
 	dev->is_mounted = 1;
+	dev->checkpt_erase_failed = 0; /* new mount; NAND driver still enforces its fault latch */
 
 	/* OK now calculate a few things for the device */
 
@@ -4863,9 +4865,14 @@ int yaffs_guts_initialise(struct yaffs_dev *dev)
 	yaffs_verify_free_chunks(dev);
 	yaffs_verify_blocks(dev);
 
-	/* Clean up any aborted checkpoint data */
-	if (!dev->is_checkpointed && dev->blocks_in_checkpt > 0)
-		yaffs2_checkpt_invalidate(dev);
+	/* Never erase checkpoint blocks during a read-only scan. Defer cleanup
+	 * until the first writable operation, and fail if that cleanup fails. */
+	if (!dev->read_only && (dev->checkpt_erase_failed ||
+	    (!dev->is_checkpointed && dev->blocks_in_checkpt > 0 &&
+	     yaffs2_checkpt_invalidate(dev) != YAFFS_OK))) {
+		yaffs_deinitialise(dev);
+		return YAFFS_FAIL;
+	}
 
 	yaffs_trace(YAFFS_TRACE_TRACING,
 	  "yaffs: yaffs_guts_initialise() done.");
