@@ -895,6 +895,7 @@ static int yaffs2_wr_checkpt_data(struct yaffs_dev *dev)
 static int yaffs2_rd_checkpt_data(struct yaffs_dev *dev)
 {
 	int ok = 1;
+	int opened = 0;
 
 	if (!dev->param.is_yaffs2)
 		ok = 0;
@@ -905,8 +906,10 @@ static int yaffs2_rd_checkpt_data(struct yaffs_dev *dev)
 		ok = 0;
 	}
 
-	if (ok)
+	if (ok) {
 		ok = yaffs2_checkpt_open(dev, 0); /* open for read */
+		opened = ok;
+	}
 
 	if (ok) {
 		yaffs_trace(YAFFS_TRACE_CHECKPOINT,
@@ -935,7 +938,7 @@ static int yaffs2_rd_checkpt_data(struct yaffs_dev *dev)
 			"read checkpoint checksum %d", ok);
 	}
 
-	if (!yaffs_checkpt_close(dev))
+	if (opened && !yaffs_checkpt_close(dev))
 		ok = 0;
 
 	if (ok)

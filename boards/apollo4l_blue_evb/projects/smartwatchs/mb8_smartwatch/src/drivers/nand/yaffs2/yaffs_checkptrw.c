@@ -173,9 +173,13 @@ static void yaffs2_checkpt_find_block(struct yaffs_dev *dev)
 			enum yaffs_block_state state;
 			u32 seq;
 
-			dev->tagger.read_chunk_tags_fn(dev,
+			memset(&tags, 0, sizeof(tags));
+			if (dev->tagger.read_chunk_tags_fn(dev,
 					apply_chunk_offset(dev, chunk),
-					NULL, &tags);
+					NULL, &tags) != YAFFS_OK) {
+				dev->checkpt_read_failed = 1;
+				return;
+			}
 			yaffs_trace(YAFFS_TRACE_CHECKPOINT,
 				"find next checkpt block: search: block %d oid %d seq %d eccr %d",
 				i,
@@ -185,9 +189,12 @@ static void yaffs2_checkpt_find_block(struct yaffs_dev *dev)
 			if (tags.seq_number != YAFFS_SEQUENCE_CHECKPOINT_DATA)
 				continue;
 
-			dev->tagger.query_block_fn(dev,
+			if (dev->tagger.query_block_fn(dev,
 						apply_block_offset(dev, i),
-						&state, &seq);
+						&state, &seq) != YAFFS_OK) {
+				dev->checkpt_read_failed = 1;
+				return;
+			}
 			if (state == YAFFS_BLOCK_STATE_DEAD)
 				continue;
 
@@ -213,12 +220,14 @@ int yaffs2_checkpt_open(struct yaffs_dev *dev, int writing)
 
 	dev->checkpt_open_write = writing;
 	dev->checkpt_write_failed = 0;
+	dev->checkpt_read_failed = 0;
 
 	/* Got the functions we need? */
 	if (!dev->tagger.write_chunk_tags_fn ||
 	    !dev->tagger.read_chunk_tags_fn ||
 	    !dev->drv.drv_erase_fn ||
-	    !dev->drv.drv_mark_bad_fn)
+	    !dev->drv.drv_mark_bad_fn ||
+	    (!writing && !dev->tagger.query_block_fn))
 		return 0;
 
 	if (writing && !yaffs2_checkpt_space_ok(dev))
@@ -380,7 +389,7 @@ int yaffs2_checkpt_rd(struct yaffs_dev *dev, void *data, int n_bytes)
 	if (!dev->checkpt_buffer)
 		return 0;
 
-	if (dev->checkpt_open_write)
+	if (dev->checkpt_open_write || dev->checkpt_read_failed)
 		return -1;
 
 	while (i < n_bytes) {
@@ -390,6 +399,8 @@ int yaffs2_checkpt_rd(struct yaffs_dev *dev, void *data, int n_bytes)
 
 			if (dev->checkpt_cur_block < 0) {
 				yaffs2_checkpt_find_block(dev);
+				if (dev->checkpt_read_failed)
+					return -1;
 				dev->checkpt_cur_chunk = 0;
 			}
 
@@ -405,10 +416,14 @@ int yaffs2_checkpt_rd(struct yaffs_dev *dev, void *data, int n_bytes)
 			dev->n_page_reads++;
 
 			/* Read in the next chunk */
-			dev->tagger.read_chunk_tags_fn(dev,
+			memset(&tags, 0, sizeof(tags));
+			if (dev->tagger.read_chunk_tags_fn(dev,
 						offset_chunk,
 						dev->checkpt_buffer,
-						&tags);
+						&tags) != YAFFS_OK) {
+				dev->checkpt_read_failed = 1;
+				return -1;
+			}
 
 			/* Bail out if the chunk is corrupted. */
 			if (tags.chunk_id != (u32)(dev->checkpt_page_seq + 1) ||
@@ -472,7 +487,8 @@ int yaffs_checkpt_close(struct yaffs_dev *dev)
 	yaffs_trace(YAFFS_TRACE_CHECKPOINT, "checkpoint byte count %d",
 		dev->checkpt_byte_count);
 
-	return dev->checkpt_buffer && !dev->checkpt_write_failed;
+	return dev->checkpt_buffer && !dev->checkpt_write_failed &&
+	       !dev->checkpt_read_failed;
 }
 
 int yaffs2_checkpt_invalidate_stream(struct yaffs_dev *dev)

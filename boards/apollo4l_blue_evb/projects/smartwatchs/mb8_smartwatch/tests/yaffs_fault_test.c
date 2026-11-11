@@ -213,6 +213,74 @@ static void test_checkpoint_program_failure(void)
     assert(yaffs_checkpt_close(&dev) == 1 && checkpoint_programs == 1);
 }
 
+static int read_mode, read_calls, query_calls;
+static int mock_checkpoint_read(struct yaffs_dev *dev, int page, u8 *data,
+                                struct yaffs_ext_tags *tags)
+{
+    (void)dev; (void)page; (void)data;
+    read_calls++;
+    /* Even plausible output must be discarded when the callback reports failure. */
+    memset(tags, 0, sizeof(*tags));
+    tags->seq_number = read_mode == 4 ? 0 : YAFFS_SEQUENCE_CHECKPOINT_DATA;
+    tags->obj_id = 2;
+    tags->chunk_id = 1;
+    if (read_mode == 0 || (read_mode == 2 && data)) return YAFFS_FAIL;
+    if (data) {
+        u32 hdr[4] = {YAFFS_CHECKPOINT_VERSION, 0, 0, 0};
+        memcpy(data, hdr, sizeof(hdr));
+        data[sizeof(hdr)] = 0x5a;
+    }
+    return YAFFS_OK;
+}
+static int mock_checkpoint_query(struct yaffs_dev *dev, int block,
+                                 enum yaffs_block_state *state, u32 *seq)
+{
+    (void)dev; (void)block; query_calls++; *state = YAFFS_BLOCK_STATE_EMPTY;
+    *seq = YAFFS_SEQUENCE_CHECKPOINT_DATA;
+    return read_mode == 1 ? YAFFS_FAIL : YAFFS_OK;
+}
+static void test_checkpoint_read_failure(void)
+{
+    for (read_mode = 0; read_mode <= 4; read_mode++) {
+        struct yaffs_dev dev = {0};
+        struct yaffs_block_info block = {0};
+        u8 buffer[64] = {0}, dest = 0x7a;
+        int list[1] = {-1};
+        dev.internal_start_block = dev.internal_end_block = 1;
+        dev.param.chunks_per_block = 64; dev.data_bytes_per_chunk = sizeof(buffer);
+        dev.block_info = &block; dev.checkpt_max_blocks = 1;
+        dev.checkpt_block_list = list; dev.checkpt_buffer = buffer;
+        dev.checkpt_next_block = 1; dev.checkpt_cur_block = -1;
+        dev.checkpt_byte_offs = sizeof(buffer);
+        dev.tagger.read_chunk_tags_fn = mock_checkpoint_read;
+        dev.tagger.query_block_fn = mock_checkpoint_query;
+        read_calls = query_calls = 0;
+        int rc = yaffs2_checkpt_rd(&dev, &dest, 1);
+        if (read_mode <= 2) {
+            assert(rc < 0 && dest == 0x7a);
+            assert(yaffs2_checkpt_rd(&dev, &dest, 1) < 0); /* latched */
+            assert(yaffs_checkpt_close(&dev) == 0);
+        } else if (read_mode == 3) {
+            assert(rc == 1 && dest == 0x5a);
+            assert(yaffs_checkpt_close(&dev) == 1);
+        } else {
+            assert(rc == 0 && dest == 0x7a); /* no checkpoint, not I/O error */
+            assert(yaffs_checkpt_close(&dev) == 1);
+        }
+        assert(read_calls == ((read_mode == 2 || read_mode == 3) ? 2 : 1));
+        assert(query_calls == ((read_mode == 0 || read_mode == 4) ? 0 : 1));
+    }
+    /* A skipped restore must not close a stale prior write stream. */
+    struct yaffs_dev dev = {0};
+    u8 buffer[64] = {0};
+    dev.param.is_yaffs2 = 1; dev.param.skip_checkpt_rd = 1;
+    dev.checkpt_buffer = buffer; dev.checkpt_open_write = 1;
+    dev.checkpt_byte_offs = 17; dev.data_bytes_per_chunk = sizeof(buffer);
+    dev.tagger.write_chunk_tags_fn = fail_checkpoint_program;
+    checkpoint_programs = 0;
+    assert(yaffs2_checkpt_restore(&dev) == 0 && checkpoint_programs == 0);
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 1 || strcmp(argv[1], "tags") == 0) test_failed_tag_read();
@@ -220,6 +288,7 @@ int main(int argc, char **argv)
     if (argc == 1 || strcmp(argv[1], "write") == 0) test_write_failure_keeps_cache();
     if (argc == 1 || strcmp(argv[1], "checkpoint") == 0) test_checkpoint_propagation();
     if (argc == 1 || strcmp(argv[1], "checkpoint-io") == 0) test_checkpoint_program_failure();
+    if (argc == 1 || strcmp(argv[1], "checkpoint-read") == 0) test_checkpoint_read_failure();
     puts("YAFFS fault tests passed");
     return 0;
 }

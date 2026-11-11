@@ -620,3 +620,16 @@ collection. Default and read-only startup configurations were ARM built.
 Do not infer stock partition ownership, authorize writes, or call the branch
 production-ready from these changes. Power-cut and on-device tests still need
 explicitly authorized, backed-up test media.
+
+WIP CHECKPOINT RECOVERY HARDENING (2026-11-11)
+Checkpoint block-discovery tag reads, block queries and checkpoint-page reads
+now stop on a callback failure without interpreting returned tag/buffer data.
+The error remains latched for the current checkpoint stream; checkpoint close
+reports failure. A skipped or failed-to-open checkpoint read does not close a
+stale write stream. No-checkpoint-found remains distinct from an I/O error.
+For this board the NAND callbacks also latch scan_error, so read-only mount
+validation fails closed rather than enabling writes after an underlying fault.
+Host tests inject discovery/query/page callback failures and exercise a valid
+synthetic checkpoint page, no-checkpoint and skipped-restore cases. Both
+normal and read-only startup ARM configurations compile. Tests do not provide
+end-to-end reboot or power-cut coverage and do not prove hardware behavior.
