@@ -3,6 +3,7 @@
  */
 #include "mb8_storage.h"
 #include "mb8_nand_board.h"
+#include "mb8_nand_partitions.h"
 #include "mb8_nand_transport.h"
 #if WATCH_NAND_DEBUG_REPRO
 #include "mb8_storage_log.h"
@@ -35,6 +36,7 @@ void mb8_storage_debug_trace(bool enable)
 static SemaphoreHandle_t mutex;
 static TaskHandle_t      owner;
 static bool              registered, scan_error;
+static struct mb8_partition_range selected_partition;
 #if WATCH_NAND_DEBUG_REPRO
 bool mb8_storage_debug_failed(void) { return scan_error; }
 uint32_t mb8_storage_debug_last_page(void) { return debug_page_valid ? debug_page : UINT32_MAX; }
@@ -54,7 +56,7 @@ static uint32_t partition_first(void)
     if (format_provisioned)
         return 0;
 #endif
-    return mb8_nand_board.first_block;
+    return selected_partition.first_block;
 }
 
 static uint32_t partition_count(void)
@@ -63,7 +65,7 @@ static uint32_t partition_count(void)
     if (format_provisioned)
         return DS35_BLOCKS;
 #endif
-    return mb8_nand_board.block_count;
+    return selected_partition.block_count;
 }
 
 static bool partition_authorized(void)
@@ -1137,12 +1139,15 @@ int mb8_storage_mount(bool read_only)
         return -1;
     }
 #endif
-    if (partition_first() >= DS35_BLOCKS || partition_count() < 16 ||
-        partition_count() > DS35_BLOCKS - partition_first())
+    /* Validate the complete map before opening the bus. It supplies physical
+     * eraseblock bounds only and never grants access to the contents. */
+    struct mb8_partition_range selected;
+    if (mb8_partition_active(&selected) != MB8_PARTITION_OK)
     {
-        status_text = "filesystem partition/bounds unconfirmed; no filesystem scan attempted";
+        status_text = "partition map invalid/unconfigured; no filesystem scan attempted";
         return -1;
     }
+    selected_partition = selected;
     if (!partition_authorized())
     {
         status_text = "YAFFS format/layout unconfirmed (stock/blank NAND is not proof); no scan";
@@ -1199,7 +1204,7 @@ int mb8_storage_mount(bool read_only)
         dev.param.chunks_per_block      = 64;
         dev.param.spare_bytes_per_chunk = DS35_TAG_CAPACITY;
         dev.param.start_block           = partition_first();
-        dev.param.end_block             = partition_first() + partition_count() - 1;
+        dev.param.end_block             = selected_partition.last_block;
         dev.param.n_reserved_blocks     = 5;
         dev.param.n_caches              = MB8_NAND_CACHE_PAGES;
 #if WATCH_NAND_WRITE_TRACE

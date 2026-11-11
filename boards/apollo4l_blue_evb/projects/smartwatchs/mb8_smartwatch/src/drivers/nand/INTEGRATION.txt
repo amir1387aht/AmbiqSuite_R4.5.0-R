@@ -590,3 +590,12 @@ erase, remount, endurance, ECC, and power-interruption testing on explicitly
 approved expendable media. A prior permission withdrawal is not reversed by
 this code change. Do not merge or ship this branch as production-ready based on
 host tests or compilation alone.
+
+PARTITION MAP (2026-11-11)
+See PARTITIONS.txt. A compile-time multi-entry physical eraseblock map now
+validates all entries and selects one YAFFS2 OOB4 range for /nand. YAFFS native
+start/end and DS35 range guards both use the selected bounds. The normal map
+is intentionally unconfigured and fails before the bus is opened; all existing
+layout, partition, write and destructive-boot authorization gates remain.
+This is not an on-flash partition format, a stock-layout detector, a formatter,
+or a multi-volume mount implementation. No physical layout has been confirmed.

@@ -1,0 +1,47 @@
+NAND PARTITION MAP (WIP; NOT A FLASH FORMAT)
+===========================================
+YAFFS Direct already takes a start_block and inclusive end_block. The adapter
+uses those native bounds and also passes the same physical range to DS35, whose
+read/program/erase/bad-block APIs check the bounds. YAFFS may internally offset
+block zero; its NAND layer translates it back before calling the driver.
+
+This is a compile-time map, NOT an on-flash partition table. It does not write
+metadata, move existing files, initialize a volume, format media, discover a
+stock layout, or authorize writes. No guessed map is installed. The normal
+profile stays unconfigured; mount fails BEFORE opening the NAND bus. The
+existing debug profile retains its previous whole-device diagnostic range and
+separate existing guards; that exception is NOT a production partition.
+
+Editing the map (only after the physical ranges and existing data are verified):
+- mb8_nand_partitions.c has an array of named physical eraseblock ranges. Each
+  entry specifies first block, number of blocks, and either RESERVED or
+  YAFFS2_OOB4. Record ALL independently verified regions that must not overlap.
+- The current first entry takes FIRST_BLOCK/BLOCK_COUNT from mb8_nand_board.h.
+  Add other verified entries in that array; MB8_ACTIVE_PARTITION selects the
+  one YAFFS volume. Only one volume may be mounted by this adapter at a time,
+  always at /nand. Multiple map entries do NOT create multiple concurrent
+  filesystems, and no automatic partition switching is provided.
+- The validator rejects empty or out-of-device ranges, integer overflow,
+  overlaps including reserved regions, duplicate/empty names, unknown types,
+  fewer than 16 blocks for any YAFFS entry, and a reserved active entry.
+  It accepts adjacent ranges. Unlisted space is NOT assumed empty or safe.
+- The active YAFFS range is passed to YAFFS as inclusive first/last blocks.
+  DS35 has 1024 eraseblocks, each with 64 pages of 2048 main bytes; bad blocks,
+  YAFFS reserved blocks, metadata and checkpoints reduce usable capacity.
+- Confirmation of bounds AND of a separately provisioned filesystem using
+  this exact OOB4 tag format is still required by the existing board gates.
+  The known stock-derived in-band tags do not match this port's OOB4 layout.
+  The separate write-authorization gate and the withdrawn destructive-boot
+  guards are unchanged. Changing an entry is not permission to modify media.
+- A table edit changes what the firmware will consider accessible; it does not
+  migrate or erase anything. Never change layout or enable writes on data you
+  have not backed up. A mistaken map can overwrite important existing data.
+
+Host-only checks, from the smartwatch project directory:
+  sh tests/run_nand_partition_test.sh
+  sh tests/run_yaffs_fault_test.sh
+Partition tests cover whole-map validation, randomized overlap checks, and
+mocked DS35 out-of-range read/write/erase/BBM guards. They cannot establish
+real partition ownership, validate watch hardware, power-fail behavior, or
+production readiness. On-device write/erase testing needs explicit approval
+and suitable backed-up or expendable media.

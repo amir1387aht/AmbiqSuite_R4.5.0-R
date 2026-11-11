@@ -15,7 +15,8 @@
  * After success use yaffs_open/read/write/fsync/close under /nand.
  * Ordinary writes require board authorization AND read_only=false. A YAFFS partition
  * must be independently identified/provisioned; never use a stock-firmware
- * partition merely because the chip geometry matches.
+ * partition merely because the chip geometry matches. See PARTITIONS.txt for
+ * the validated compile-time map and its single-volume limitation.
  */
 struct mb8_storage_usage
 {
