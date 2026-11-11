@@ -555,3 +555,38 @@ unchanged. Set WATCH_NAND_STOCK_RX_TIMING=0 to compare the old HAL settings;
 pass the flag to flash.bat itself and clean between builds. Results must be
 verified on the watch; agreement or repeatability alone is not proof of data
 correctness. Full-format and write-test boot modes remain hard-disabled.
+
+WIP HARDENING: HOST FAULT REGRESSIONS (2026-11-11)
+This branch is NOT production validated. Defaults remain guarded: no confirmed
+filesystem partition/layout or ordinary write authorization. Full-format and
+write-test boot flags remain rejected. The historical WRITE_TRACE diagnostic
+is a separate, write-capable debug path; do not run it without a specifically
+approved, backed-up test area. No hardware testing or power-cut testing was
+performed for this hardening change.
+
+YAFFS now stops garbage collection when a chunk read fails, retains the live
+chunk and its cursor, and preserves shrink-header erase protection on failure.
+Failed tag reads no longer inspect an uninitialized tag structure. A failed
+page allocation/write no longer counts as a successful full-page write or
+invalidates the old cache; write-through failure keeps its dirty cache. The
+stored-size update is deferred until a page has actually been written.
+
+Host-only tests (no hardware access), from the smartwatch project directory:
+  sh tests/run_yaffs_fault_test.sh
+They exercise actual YAFFS code with injected tag read / GC failure and an
+allocation failure, plus buffered-write behavior, under ASan/UBSan. They are
+focused regression tests, NOT a NAND simulator or production qualification.
+ARM GCC 14.2.1 builds were checked for default and read-only startup-test
+configurations; destructive build flags remain rejected. See YAFFS license in
+yaffs2/LICENSE and vendor licensing before distribution.
+
+Release blockers: confirm the exact target device and preserved data, obtain an
+independent backup, establish partition boundaries and compatible YAFFS layout;
+validate serial/quad transport and 48 MHz workaround on the actual board; design
+and verify permanent bad-block retirement that distinguishes media failures
+from ambiguous transport failures; audit and fault-test all filesystem APIs,
+including checkpoint/sync and cleanup failure paths; perform controlled write,
+erase, remount, endurance, ECC, and power-interruption testing on explicitly
+approved expendable media. A prior permission withdrawal is not reversed by
+this code change. Do not merge or ship this branch as production-ready based on
+host tests or compilation alone.

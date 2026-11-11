@@ -34,8 +34,12 @@ int yaffs_rd_chunk_tags_nand(struct yaffs_dev *dev, int nand_chunk,
 	if (!tags)
 		tags = &local_tags;
 
+	memset(tags, 0, sizeof(*tags));
 	result = dev->tagger.read_chunk_tags_fn(dev, flash_chunk, buffer, tags);
-	if (tags && tags->ecc_result > YAFFS_ECC_RESULT_NO_ERROR) {
+	/* A failed tagger may leave tags unset. Never inspect or consume them. */
+	if (result != YAFFS_OK)
+		return YAFFS_FAIL;
+	if (tags->ecc_result > YAFFS_ECC_RESULT_NO_ERROR) {
 
 		struct yaffs_block_info *bi;
 		bi = yaffs_get_block_info(dev,

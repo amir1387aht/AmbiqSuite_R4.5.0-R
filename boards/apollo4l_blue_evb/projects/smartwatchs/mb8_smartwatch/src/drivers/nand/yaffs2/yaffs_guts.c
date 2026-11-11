@@ -2238,8 +2238,9 @@ static inline int yaffs_gc_process_chunk(struct yaffs_dev *dev,
 	int ret_val = YAFFS_OK;
 
 	memset(&tags, 0, sizeof(tags));
-	yaffs_rd_chunk_tags_nand(dev, old_chunk,
-				 buffer, &tags);
+	/* A failed read must not make a live chunk look like an orphan. */
+	if (yaffs_rd_chunk_tags_nand(dev, old_chunk, buffer, &tags) != YAFFS_OK)
+		return YAFFS_FAIL;
 	object = yaffs_find_by_number(dev, tags.obj_id);
 
 	yaffs_trace(YAFFS_TRACE_GC_DETAIL,
@@ -2382,6 +2383,7 @@ static int yaffs_gc_block(struct yaffs_dev *dev, int block, int whole_block)
 	int chunks_before = yaffs_get_erased_chunks(dev);
 	int chunks_after;
 	struct yaffs_block_info *bi = yaffs_get_block_info(dev, block);
+	int had_shrink_hdr = bi->has_shrink_hdr;
 
 	is_checkpt_block = (bi->block_state == YAFFS_BLOCK_STATE_CHECKPOINT);
 
@@ -2419,13 +2421,17 @@ static int yaffs_gc_block(struct yaffs_dev *dev, int block, int whole_block)
 		     ret_val == YAFFS_OK &&
 		     dev->gc_chunk < dev->param.chunks_per_block &&
 		     (bi->block_state == YAFFS_BLOCK_STATE_COLLECTING) &&
-		     max_copies > 0;
-		     dev->gc_chunk++, old_chunk++) {
+		     max_copies > 0; ) {
 			if (yaffs_check_chunk_bit(dev, block, dev->gc_chunk)) {
 				/* Page is in use and might need to be copied */
 				max_copies--;
 				ret_val = yaffs_gc_process_chunk(dev, bi,
 							old_chunk, buffer);
+			}
+			/* Do not skip a live chunk after a failed read or copy. */
+			if (ret_val == YAFFS_OK) {
+				dev->gc_chunk++;
+				old_chunk++;
 			}
 		}
 		yaffs_release_temp_buffer(dev, buffer);
@@ -2434,6 +2440,9 @@ static int yaffs_gc_block(struct yaffs_dev *dev, int block, int whole_block)
 	yaffs_verify_collected_blk(dev, bi, block);
 
 	if (bi->block_state == YAFFS_BLOCK_STATE_COLLECTING) {
+		/* A failed collection must retain the erase protection. */
+		if (ret_val != YAFFS_OK && had_shrink_hdr)
+			bi->has_shrink_hdr = 1;
 		/*
 		 * The gc did not complete. Set block state back to FULL
 		 * because checkpointing does not restore gc.
@@ -2877,17 +2886,15 @@ int yaffs_wr_data_obj(struct yaffs_obj *in, int inode_chunk,
 	 * If this is a data chunk and the write goes past the end of the stored
 	 * size then update the stored_size.
 	 */
-	if (inode_chunk > 0) {
-		endpos =  (inode_chunk - 1) * dev->data_bytes_per_chunk +
-				n_bytes;
-		if (in->variant.file_variant.stored_size < endpos)
-			in->variant.file_variant.stored_size = endpos;
-	}
-
 	new_chunk_id =
 	    yaffs_write_new_chunk(dev, buffer, &new_tags, use_reserve);
 
 	if (new_chunk_id > 0) {
+		if (inode_chunk > 0) {
+			endpos = (inode_chunk - 1) * dev->data_bytes_per_chunk + n_bytes;
+			if (in->variant.file_variant.stored_size < endpos)
+				in->variant.file_variant.stored_size = endpos;
+		}
 		yaffs_put_chunk_in_file(in, inode_chunk, new_chunk_id, 0);
 
 		if (prev_chunk_id > 0)
@@ -3449,13 +3456,16 @@ int yaffs_do_file_wr(struct yaffs_obj *in, const u8 *buffer, Y_LOFF_T offset,
 					cache->n_bytes = n_writeback;
 
 					if (write_through) {
-						chunk_written =
-						    yaffs_wr_data_obj
-						    (cache->object,
-						     cache->chunk_id,
-						     cache->data,
-						     cache->n_bytes, 1);
-						cache->dirty = 0;
+						chunk_written = yaffs_wr_data_obj(cache->object,
+							cache->chunk_id, cache->data,
+							cache->n_bytes, 1);
+						if (chunk_written > 0)
+							cache->dirty = 0;
+						else
+							chunk_written = -1;
+					} else {
+						/* Buffered successfully, not yet durable. */
+						chunk_written = 1;
 					}
 				} else {
 					chunk_written = -1;	/* fail write */
@@ -3481,6 +3491,8 @@ int yaffs_do_file_wr(struct yaffs_obj *in, const u8 *buffer, Y_LOFF_T offset,
 						      n_writeback, 0);
 
 				yaffs_release_temp_buffer(dev, local_buffer);
+				if (chunk_written <= 0)
+					chunk_written = -1;
 			}
 		} else {
 			/* A full chunk. Write directly from the buffer. */
@@ -3489,9 +3501,11 @@ int yaffs_do_file_wr(struct yaffs_obj *in, const u8 *buffer, Y_LOFF_T offset,
 			    yaffs_wr_data_obj(in, chunk, buffer,
 					      dev->data_bytes_per_chunk, 0);
 
-			/* Since we've overwritten the cached data,
-			 * we better invalidate it. */
-			yaffs_invalidate_chunk_cache(in, chunk);
+			/* Retain the old cached data if the new page was not written. */
+			if (chunk_written > 0)
+				yaffs_invalidate_chunk_cache(in, chunk);
+			else
+				chunk_written = -1;
 		}
 
 		if (chunk_written >= 0) {
