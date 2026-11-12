@@ -237,13 +237,14 @@ static int mock_checkpoint_read(struct yaffs_dev *dev, int page, u8 *data,
 static int mock_checkpoint_query(struct yaffs_dev *dev, int block,
                                  enum yaffs_block_state *state, u32 *seq)
 {
-    (void)dev; (void)block; query_calls++; *state = YAFFS_BLOCK_STATE_EMPTY;
-    *seq = YAFFS_SEQUENCE_CHECKPOINT_DATA;
+    (void)dev; (void)block; query_calls++;
+    *state = read_mode == 5 ? YAFFS_BLOCK_STATE_DEAD : YAFFS_BLOCK_STATE_NEEDS_SCAN;
+    *seq = read_mode == 6 ? 0 : YAFFS_SEQUENCE_CHECKPOINT_DATA;
     return read_mode == 1 ? YAFFS_FAIL : YAFFS_OK;
 }
 static void test_checkpoint_read_failure(void)
 {
-    for (read_mode = 0; read_mode <= 4; read_mode++) {
+    for (read_mode = 0; read_mode <= 6; read_mode++) {
         struct yaffs_dev dev = {0};
         struct yaffs_block_info block = {0};
         u8 buffer[64] = {0}, dest = 0x7a;
@@ -269,8 +270,9 @@ static void test_checkpoint_read_failure(void)
             assert(rc == 0 && dest == 0x7a); /* no checkpoint, not I/O error */
             assert(yaffs_checkpt_close(&dev) == 1);
         }
-        assert(read_calls == ((read_mode == 2 || read_mode == 3) ? 2 : 1));
-        assert(query_calls == ((read_mode == 0 || read_mode == 4) ? 0 : 1));
+        assert(read_calls == ((read_mode == 2 || read_mode == 3) ? 2 :
+                              (read_mode == 1 || read_mode >= 5) ? 0 : 1));
+        assert(query_calls == 1);
     }
     /* A skipped restore must not close a stale prior write stream. */
     struct yaffs_dev dev = {0};

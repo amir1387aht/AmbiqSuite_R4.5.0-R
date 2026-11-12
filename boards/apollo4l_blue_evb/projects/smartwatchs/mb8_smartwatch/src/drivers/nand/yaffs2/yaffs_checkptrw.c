@@ -179,6 +179,19 @@ static void yaffs2_checkpt_find_block(struct yaffs_dev *dev)
 			enum yaffs_block_state state;
 			u32 seq;
 
+			/* Query first: board callbacks check factory-bad markers before
+			 * reading tags. A bad block must not cause a failed tag read
+			 * (and a latched transport error) during checkpoint discovery. */
+			if (dev->tagger.query_block_fn(dev,
+						apply_block_offset(dev, i),
+						&state, &seq) != YAFFS_OK) {
+				dev->checkpt_read_failed = 1;
+				return;
+			}
+			if (state == YAFFS_BLOCK_STATE_DEAD ||
+			    seq != YAFFS_SEQUENCE_CHECKPOINT_DATA)
+				continue;
+
 			memset(&tags, 0, sizeof(tags));
 			if (dev->tagger.read_chunk_tags_fn(dev,
 					apply_chunk_offset(dev, chunk),
@@ -186,22 +199,7 @@ static void yaffs2_checkpt_find_block(struct yaffs_dev *dev)
 				dev->checkpt_read_failed = 1;
 				return;
 			}
-			yaffs_trace(YAFFS_TRACE_CHECKPOINT,
-				"find next checkpt block: search: block %d oid %d seq %d eccr %d",
-				i,
-				tags.obj_id, tags.seq_number,
-				tags.ecc_result);
-
 			if (tags.seq_number != YAFFS_SEQUENCE_CHECKPOINT_DATA)
-				continue;
-
-			if (dev->tagger.query_block_fn(dev,
-						apply_block_offset(dev, i),
-						&state, &seq) != YAFFS_OK) {
-				dev->checkpt_read_failed = 1;
-				return;
-			}
-			if (state == YAFFS_BLOCK_STATE_DEAD)
 				continue;
 
 			/* Right kind of block */

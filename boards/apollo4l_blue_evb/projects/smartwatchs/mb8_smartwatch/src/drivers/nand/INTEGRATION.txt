@@ -656,3 +656,22 @@ program load with serial cache-prefix repair as on-watch-tested. An earlier
 full pass/fail scope are not present in this repository's recorded notes;
 do not discard the earlier test evidence or claim it validates the latest
 filesystem changes, every page, power-fail behavior, or partition ownership.
+
+WIP CHECKPOINT FACTORY-BAD SCAN AND HOST NAND MODEL (2026-11-11)
+Checkpoint discovery queries each block before reading checkpoint tags. The
+board's query checks bad-block markers first; a known factory-bad block is
+skipped without a normal ECC/tag read. Query and subsequent tag-read failures
+still fail the checkpoint stream closed. This can add bad-block marker checks
+on a cold mount. The board caches successful marker checks during a session.
+
+Run tests/run_yaffs_nand_sim_test.sh on a host with a C compiler and ASan/UBSan.
+The test runs the real YAFFS direct API and OOB tag marshaller on an in-memory
+NAND model: page size 2048, 64 pages/block, 60 user-OOB bytes, an 80-block
+partition, a factory-bad block, and single-program-per-page rules. It checks
+checkpoint restore, 5,500 full-page overwrites with garbage collection, data
+verification, a checkpoint-skipping scan after a clean operation boundary,
+read-only mount with no program/erase, and partition access bounds. The test
+fails on the pre-fix implementation because it reads the simulated bad block.
+It does not model the hardware driver, actual OOB/ECC behavior, timing, worn
+media, concurrent access, torn writes, or power interruption. These results do
+not qualify the flash for production or establish partition ownership.
