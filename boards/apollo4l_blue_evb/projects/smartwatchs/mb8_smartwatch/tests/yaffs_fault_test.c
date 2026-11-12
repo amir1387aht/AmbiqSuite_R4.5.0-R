@@ -226,6 +226,7 @@ static int mock_checkpoint_read(struct yaffs_dev *dev, int page, u8 *data,
     tags->seq_number = read_mode == 4 ? 0 : YAFFS_SEQUENCE_CHECKPOINT_DATA;
     tags->obj_id = 2;
     tags->chunk_id = 1;
+    tags->ecc_result = read_mode == 7 ? YAFFS_ECC_RESULT_UNFIXED : YAFFS_ECC_RESULT_NO_ERROR;
     if (read_mode == 0 || (read_mode == 2 && data)) return YAFFS_FAIL;
     if (data) {
         u32 hdr[4] = {YAFFS_CHECKPOINT_VERSION, 0, 0, 0};
@@ -244,7 +245,7 @@ static int mock_checkpoint_query(struct yaffs_dev *dev, int block,
 }
 static void test_checkpoint_read_failure(void)
 {
-    for (read_mode = 0; read_mode <= 6; read_mode++) {
+    for (read_mode = 0; read_mode <= 7; read_mode++) {
         struct yaffs_dev dev = {0};
         struct yaffs_block_info block = {0};
         u8 buffer[64] = {0}, dest = 0x7a;
@@ -259,7 +260,7 @@ static void test_checkpoint_read_failure(void)
         dev.tagger.query_block_fn = mock_checkpoint_query;
         read_calls = query_calls = 0;
         int rc = yaffs2_checkpt_rd(&dev, &dest, 1);
-        if (read_mode <= 2) {
+        if (read_mode <= 2 || read_mode == 7) {
             assert(rc < 0 && dest == 0x7a);
             assert(yaffs2_checkpt_rd(&dev, &dest, 1) < 0); /* latched */
             assert(yaffs_checkpt_close(&dev) == 0);
@@ -271,7 +272,7 @@ static void test_checkpoint_read_failure(void)
             assert(yaffs_checkpt_close(&dev) == 1);
         }
         assert(read_calls == ((read_mode == 2 || read_mode == 3) ? 2 :
-                              (read_mode == 1 || read_mode >= 5) ? 0 : 1));
+                              (read_mode == 1 || read_mode == 5 || read_mode == 6) ? 0 : 1));
         assert(query_calls == 1);
     }
     /* A skipped restore must not close a stale prior write stream. */

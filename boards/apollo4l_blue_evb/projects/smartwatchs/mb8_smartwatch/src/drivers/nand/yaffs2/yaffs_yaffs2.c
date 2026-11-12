@@ -1158,9 +1158,12 @@ static inline int yaffs2_scan_chunk(struct yaffs_dev *dev,
 		dev->summary_used++;
 	}
 
-	if (result == YAFFS_FAIL)
+	if (result == YAFFS_FAIL) {
 		yaffs_trace(YAFFS_TRACE_SCAN,
 				"Could not get tags for chunk %d\n", chunk);
+		/* An unreadable page is not an empty page. */
+		return YAFFS_FAIL;
+	}
 	/* Let's have a good look at this chunk... */
 
 	if (!tags.chunk_used) {
@@ -1314,6 +1317,8 @@ static inline int yaffs2_scan_chunk(struct yaffs_dev *dev,
 						  chunk,
 						  chunk_data,
 						  NULL);
+			if (result != YAFFS_OK)
+				return YAFFS_FAIL;
 
 			oh = (struct yaffs_obj_hdr *)chunk_data;
 
@@ -1594,7 +1599,11 @@ int yaffs2_scan_backwards(struct yaffs_dev *dev)
 		bi->pages_in_use = 0;
 		bi->soft_del_pages = 0;
 
-		yaffs_query_init_block_state(dev, blk, &state, &seq_number);
+		if (yaffs_query_init_block_state(dev, blk, &state, &seq_number) != YAFFS_OK) {
+			/* Do not treat a failed query as a bad or empty block. */
+			alloc_failed = 1;
+			break;
+		}
 
 		bi->block_state = state;
 		bi->seq_number = seq_number;
@@ -1700,7 +1709,7 @@ int yaffs2_scan_backwards(struct yaffs_dev *dev)
 		/* A read-only scan must not erase or retire obsolete blocks. Keep
 		 * them FULL with no live chunks so normal writable GC can reclaim
 		 * them after an explicit read-write remount. */
-		if (!dev->read_only && bi->pages_in_use == 0 &&
+		if (!alloc_failed && !dev->read_only && bi->pages_in_use == 0 &&
 		    !bi->has_shrink_hdr &&
 		    bi->block_state == YAFFS_BLOCK_STATE_FULL) {
 			yaffs_block_became_dirty(dev, blk);

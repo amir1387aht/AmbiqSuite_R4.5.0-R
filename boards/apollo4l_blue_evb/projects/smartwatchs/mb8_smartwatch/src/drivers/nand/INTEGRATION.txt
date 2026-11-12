@@ -675,3 +675,25 @@ fails on the pre-fix implementation because it reads the simulated bad block.
 It does not model the hardware driver, actual OOB/ECC behavior, timing, worn
 media, concurrent access, torn writes, or power interruption. These results do
 not qualify the flash for production or establish partition ownership.
+
+WIP SCAN READ-FAILURE AND TAG-ECC HARDENING (2026-11-11)
+The YAFFS2 full scan now aborts on failed block queries, tag reads or object
+header reads instead of interpreting failed output as an empty or valid page.
+The block where the scan fails is not cleaned up by the normal end-of-block
+path. The Mi Band adapter rejects uncorrectable ECC in the first-page tags
+used to establish a block sequence; checkpoint discovery also rejects
+uncorrectable tags rather than trusting its next-block hint. A damaged first
+page can therefore require offline recovery rather than a writable mount.
+The board still validates with a read-only mount before any writable remount;
+this change is not a claim that arbitrary writable scan failures cannot have
+caused earlier cleanup. The board callback latches scan I/O errors separately.
+
+The host RAM model now tests six simulated RO/RW full-scan query, tag and
+header failures, and uncorrectable first-page tag ECC, without physical NAND.
+It also models three interruption points during a page program: partial main
+without tags, complete main with partial tags in a non-first page, and a
+complete program before the callback returns. After each cut it checks data,
+subsequent writes, and remount. For the complete-but-unacknowledged program,
+either the old or new full page is accepted. These are selected software
+models, not real hardware power cuts, and do not model torn block erase,
+physical ECC, partial-program restrictions, voltage behavior or all timings.

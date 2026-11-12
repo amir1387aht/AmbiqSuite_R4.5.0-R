@@ -419,8 +419,11 @@ static int query_block(struct yaffs_dev *d, int block, enum yaffs_block_state *s
         return YAFFS_FAIL;
     }
     struct yaffs_ext_tags tags = {0};
-    if (d->tagger.read_chunk_tags_fn(d, block * 64, NULL, &tags) != YAFFS_OK)
+    if (d->tagger.read_chunk_tags_fn(d, block * 64, NULL, &tags) != YAFFS_OK ||
+        tags.ecc_result > YAFFS_ECC_RESULT_FIXED)
     {
+        /* The first page's tags establish the block sequence. Uncorrectable
+         * tag ECC means that sequence is not safe to use for mount scanning. */
         scan_error = true;
         nand.writable = false;
 #if WATCH_NAND_FULL_FORMAT

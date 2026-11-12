@@ -199,6 +199,10 @@ static void yaffs2_checkpt_find_block(struct yaffs_dev *dev)
 				dev->checkpt_read_failed = 1;
 				return;
 			}
+			if (tags.ecc_result > YAFFS_ECC_RESULT_FIXED) {
+				dev->checkpt_read_failed = 1;
+				return;
+			}
 			if (tags.seq_number != YAFFS_SEQUENCE_CHECKPOINT_DATA)
 				continue;
 
