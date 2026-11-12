@@ -1,47 +1,30 @@
-NAND PARTITION MAP (WIP; NOT A FLASH FORMAT)
-===========================================
-YAFFS Direct already takes a start_block and inclusive end_block. The adapter
-uses those native bounds and also passes the same physical range to DS35, whose
-read/program/erase/bad-block APIs check the bounds. YAFFS may internally offset
-block zero; its NAND layer translates it back before calling the driver.
+NAND partition configuration
+============================
 
-This is a compile-time map, NOT an on-flash partition table. It does not write
-metadata, move existing files, initialize a volume, format media, discover a
-stock layout, or authorize writes. No guessed map is installed. The normal
-profile stays unconfigured; mount fails BEFORE opening the NAND bus. The
-existing debug profile retains its previous whole-device diagnostic range and
-separate existing guards; that exception is NOT a production partition.
+YAFFS Direct uses an inclusive start/end eraseblock range. The adapter resolves
+one active YAFFS2 volume at /nand, validates the entire compile-time map, and
+passes its physical bounds both to YAFFS and to the DS35 driver. This is not an
+on-flash partition table. It does not discover, format, migrate or grant write
+access to any existing region.
 
-Editing the map (only after the physical ranges and existing data are verified):
-- mb8_nand_partitions.c has an array of named physical eraseblock ranges. Each
-  entry specifies first block, number of blocks, and either RESERVED or
-  YAFFS2_OOB4. Record ALL independently verified regions that must not overlap.
-- The current first entry takes FIRST_BLOCK/BLOCK_COUNT from mb8_nand_board.h.
-  Add other verified entries in that array; MB8_ACTIVE_PARTITION selects the
-  one YAFFS volume. Only one volume may be mounted by this adapter at a time,
-  always at /nand. Multiple map entries do NOT create multiple concurrent
-  filesystems, and no automatic partition switching is provided.
-- The validator rejects empty or out-of-device ranges, integer overflow,
-  overlaps including reserved regions, duplicate/empty names, unknown types,
-  fewer than 16 blocks for any YAFFS entry, and a reserved active entry.
-  It accepts adjacent ranges. Unlisted space is NOT assumed empty or safe.
-- The active YAFFS range is passed to YAFFS as inclusive first/last blocks.
-  DS35 has 1024 eraseblocks, each with 64 pages of 2048 main bytes; bad blocks,
-  YAFFS reserved blocks, metadata and checkpoints reduce usable capacity.
-- Confirmation of bounds AND of a separately provisioned filesystem using
-  this exact OOB4 tag format is still required by the existing board gates.
-  The known stock-derived in-band tags do not match this port's OOB4 layout.
-  The separate write-authorization gate and the withdrawn destructive-boot
-  guards are unchanged. Changing an entry is not permission to modify media.
-- A table edit changes what the firmware will consider accessible; it does not
-  migrate or erase anything. Never change layout or enable writes on data you
-  have not backed up. A mistaken map can overwrite important existing data.
+Configure only after verifying physical ownership, preserving existing data,
+and independently provisioning a compatible YAFFS2 OOB4 filesystem:
 
-Host-only checks, from the smartwatch project directory:
-  sh tests/run_nand_partition_test.sh
-  sh tests/run_yaffs_fault_test.sh
-Partition tests cover whole-map validation, randomized overlap checks, and
-mocked DS35 out-of-range read/write/erase/BBM guards. They cannot establish
-real partition ownership, validate watch hardware, power-fail behavior, or
-production readiness. On-device write/erase testing needs explicit approval
-and suitable backed-up or expendable media.
+1. Set MB8_NAND_FIRST_BLOCK and MB8_NAND_BLOCK_COUNT in mb8_nand_board.h.
+2. Add every independently verified occupied or reserved region to the map in
+   mb8_nand_partitions.c. Set MB8_ACTIVE_PARTITION to the desired YAFFS entry.
+3. Set MB8_NAND_PARTITION_CONFIRMED and
+   MB8_NAND_YAFFS_PROVISIONED_CONFIRMED to 1 only after verification.
+4. Set MB8_NAND_WRITES_AUTHORIZED to 1 only for approved writable media.
+
+By default the active range is invalid and all confirmation values are 0.
+Write authorization without both confirmations is rejected at compile time.
+The validator rejects empty/out-of-chip ranges, overlapping or duplicate
+entries, unknown types, YAFFS ranges under 16 blocks and a reserved active
+entry. Unlisted blocks are not assumed to be available. Multiple map entries
+are supported but only the selected volume can be mounted at a time.
+
+Each DS35 block has 64 pages of 2048 main bytes; the chip has 1024 blocks.
+Bad blocks, GC reserve, metadata and checkpoints reduce available capacity.
+The known stock-derived in-band tag layout is not the same as this port's
+OOB4 layout. A mistaken range or authorization can overwrite existing data.

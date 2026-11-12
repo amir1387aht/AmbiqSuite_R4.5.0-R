@@ -565,12 +565,6 @@ static int yaffs_write_new_chunk(struct yaffs_dev *dev,
 			    yaffs_verify_chunk_written(dev, chunk, data, tags);
 
 		if (write_ok != YAFFS_OK) {
-#if WATCH_NAND_WRITE_TRACE
-            /* Diagnostic: no automatic program replay or bad-block retirement. */
-            yaffs_chunk_del(dev, chunk, 0, __LINE__);
-            yaffs_skip_rest_of_block(dev);
-            break;
-#endif
 			/* Clean up aborted write, skip to next block and
 			 * try another chunk */
 			yaffs_handle_chunk_wr_error(dev, chunk, erased_ok);

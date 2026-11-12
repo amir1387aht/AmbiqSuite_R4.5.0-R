@@ -7,17 +7,12 @@
 #ifndef WATCH_NAND_YAFFS2
 #define WATCH_NAND_YAFFS2 0
 #endif
-/* Call once from a dedicated, low-priority FreeRTOS storage worker, NOT ISR,
- * timer daemon, pre-scheduler startup, or the LVGL/render task. All yaffs_*
- * calls and unmount must run in that same worker; queue requests to it.
- * Startup creates its own worker after MCU/GPU initialization. No ordinary
- * format API; the explicit destructive boot is isolated behind FULL_FORMAT.
- * After success use yaffs_open/read/write/fsync/close under /nand.
- * Ordinary writes require board authorization AND read_only=false. A YAFFS partition
- * must be independently identified/provisioned; never use a stock-firmware
- * partition merely because the chip geometry matches. See PARTITIONS.txt for
- * the validated compile-time map and its single-volume limitation.
- */
+/* All YAFFS and storage operations must run in the dedicated storage task.
+ * Use mb8_storage_execute() from a normal task; never call from ISR, a timer
+ * daemon, or the UI/render task. The caller and context must remain alive and
+ * the calling task must not be deleted until the synchronous request returns.
+ * No automatic formatting or provisioning is performed. See PARTITIONS.txt. */
+typedef int (*mb8_storage_job_fn)(void *context);
 struct mb8_storage_usage
 {
     bool     raw_identified, status_valid, mounted, read_only;
@@ -27,26 +22,15 @@ struct mb8_storage_usage
     uint32_t reserved_blocks, dead_blocks, checkpoint_blocks;
 };
 #if WATCH_NAND_YAFFS2
-#if WATCH_NAND_DEBUG_REPRO
-void mb8_storage_debug_trace(bool enable);
-bool mb8_storage_debug_failed(void);
-uint32_t mb8_storage_debug_last_page(void);
-int mb8_storage_debug_compare_last_page(void);
-int mb8_storage_debug_compare_page(uint32_t page);
-void mb8_storage_debug_repro(void);
-#if WATCH_NAND_WRITE_TRACE
-void mb8_storage_write_trace(void);
-void mb8_storage_write_trace_abort(void);
-#endif
-#endif
 struct ds35_nand;
 const struct ds35_nand *mb8_storage_protection_snapshot(void);
-#if WATCH_NAND_FULL_FORMAT
-int  mb8_storage_full_erase(void);
-bool mb8_storage_format_boot(void);
-#endif
-/* Startup worker only. ID-only probe has no accessible array range. */
+/* Initializes the worker once, after platform initialization. */
 void mb8_storage_startup(void);
+/* Returns the job result, or -1 if dispatch is unavailable. Jobs execute
+ * serially on the storage worker; a job may call this recursively. */
+int mb8_storage_execute(mb8_storage_job_fn job, void *context);
+bool mb8_storage_is_worker(void);
+/* ID-only probe has no accessible array range. */
 int  mb8_storage_probe_only(void);
 /* Same storage worker only, snapshot valid until next NAND probe. */
 struct ds35_shutdown_diagnostic;
@@ -54,40 +38,6 @@ const struct ds35_shutdown_diagnostic *mb8_storage_shutdown_diagnostic(void);
 struct ds35_operation_diagnostic;
 const struct ds35_operation_diagnostic *mb8_storage_operation_diagnostic(void);
 int                                     mb8_storage_get_usage(struct mb8_storage_usage *);
-#if WATCH_NAND_STARTUP_TESTS
-struct mb8_storage_raw_diagnostic
-{
-    const char *phase;
-    uint32_t    page;
-    int         primary_result, shutdown_result, bus_result;
-};
-const struct mb8_storage_raw_diagnostic *mb8_storage_raw_diagnostic(void);
-/* Print retained core/bus/shutdown evidence from this storage worker only. */
-void mb8_storage_report_diagnostics(void);
-/* Explicit RAW diagnostic only: <=256B twice, closed read-only transaction.
- * Does NOT infer a filesystem partition or alter the ID-only empty-range API. */
-int mb8_storage_raw_read_pair(uint32_t physical_page, void *, void *, size_t);
-/* TEMPORARY physical census, never a filesystem partition/mount. Change the
- * resume constant only to the exact next-page printed by a previous run. */
-#ifndef MB8_STOCK_SCAN_FIRST_PAGE
-#define MB8_STOCK_SCAN_FIRST_PAGE 0u
-#endif
-#define MB8_STOCK_SCAN_MS 30000u
-
-struct mb8_stock_scan
-{
-    uint32_t pages, bad_blocks, bad_pages, corrected_pages;
-    uint32_t first_page, next_page, reference_agree, reference_bad;
-    uint32_t mismatch_page, mismatch_offset, quad_fingerprint, serial_fingerprint;
-    bool     time_limited, visitor_stopped, reference_available, mismatch;
-};
-
-typedef bool (*mb8_stock_page_visitor)(uint32_t page, const uint8_t *main_data, void *);
-int mb8_storage_raw_inventory(mb8_stock_page_visitor, void *, struct mb8_stock_scan *);
-
-#endif
-/* Diagnostics only: mounted partition-relative page, bounded <=2048B read. */
-int         mb8_storage_read_sample(uint32_t relative_page, void *, size_t);
 int         mb8_storage_mount(bool read_only);
 int         mb8_storage_unmount(void);
 const char *mb8_storage_status(void);

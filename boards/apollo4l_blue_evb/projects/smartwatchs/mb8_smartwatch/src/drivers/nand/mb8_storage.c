@@ -5,9 +5,6 @@
 #include "mb8_nand_board.h"
 #include "mb8_nand_partitions.h"
 #include "mb8_nand_transport.h"
-#if WATCH_NAND_DEBUG_REPRO
-#include "mb8_storage_log.h"
-#endif
 #include "yaffs_guts.h"
 #include "yaffsfs.h"
 #include "yaffs_packedtags2.h"
@@ -23,68 +20,27 @@
 
 static struct ds35_nand  nand __attribute__((section(".shared.nand"), aligned(32)));
 static struct yaffs_dev  dev;
-#if WATCH_NAND_DEBUG_REPRO
-static bool debug_trace, debug_page_valid;
-static uint32_t debug_page;
-void mb8_storage_debug_trace(bool enable)
-{
-    debug_trace = enable;
-    if (enable) debug_page_valid = false;
-}
-
-#endif
 static SemaphoreHandle_t mutex;
 static TaskHandle_t      owner;
 static bool              registered, scan_error;
 static struct mb8_partition_range selected_partition;
-#if WATCH_NAND_DEBUG_REPRO
-bool mb8_storage_debug_failed(void) { return scan_error; }
-uint32_t mb8_storage_debug_last_page(void) { return debug_page_valid ? debug_page : UINT32_MAX; }
-static uint32_t debug_hash(const u8 *p, unsigned n)
-{
-    uint32_t h = 2166136261u;
-    while (n--) h = (h ^ *p++) * 16777619u;
-    return h;
-}
-#endif
-#if WATCH_NAND_FULL_FORMAT
-static bool format_provisioned, format_io_failed;
-#endif
 static uint32_t partition_first(void)
 {
-#if WATCH_NAND_FULL_FORMAT
-    if (format_provisioned)
-        return 0;
-#endif
     return selected_partition.first_block;
 }
 
 static uint32_t partition_count(void)
 {
-#if WATCH_NAND_FULL_FORMAT
-    if (format_provisioned)
-        return DS35_BLOCKS;
-#endif
     return selected_partition.block_count;
 }
 
 static bool partition_authorized(void)
 {
-#if WATCH_NAND_FULL_FORMAT
-    if (format_provisioned)
-        return true;
-#endif
     return mb8_nand_board.partition_confirmed && mb8_nand_board.yaffs_provisioned_confirmed;
 }
 
 static bool writes_authorized(void)
 {
-#if WATCH_NAND_FULL_FORMAT
-    if (format_io_failed)
-        return false;
-    if (format_provisioned)
-        return true;
-#endif
     return mb8_nand_board.writes_authorized;
 }
 
@@ -213,26 +169,10 @@ static int read_chunk(
     (void)d;
     *ecc  = YAFFS_ECC_RESULT_UNFIXED;
     int r = ds35_read(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
-#if WATCH_NAND_DEBUG_REPRO
-    if (debug_trace && data && r >= 0) {
-        debug_page = (uint32_t)page;
-        debug_page_valid = true;
-    }
-    if (debug_trace)
-        mb8_storage_log("[NAND DEBUG] chunk page=%d data=%u bytes=%d tags=%d rc=%d status-valid=%u C0=%02x data-fnv=%08x tags-fnv=%08x phase=%s\r\n",
-            page, data != NULL, bytes, on, r, (unsigned)nand.operation.status_valid,
-            (unsigned)nand.operation.status,
-            r >= 0 && data ? (unsigned)debug_hash(data, (unsigned)bytes) : 0u,
-            r >= 0 && oob ? (unsigned)debug_hash(oob, (unsigned)on) : 0u,
-            nand.operation.phase ? nand.operation.phase : "none");
-#endif
     if (r < 0)
     {
         scan_error = true;
         nand.writable = false;
-#if WATCH_NAND_FULL_FORMAT
-        format_io_failed = true;
-#endif
         return YAFFS_FAIL;
     }
     *ecc = r == DS35_CORRECTED ? YAFFS_ECC_RESULT_FIXED : YAFFS_ECC_RESULT_NO_ERROR;
@@ -242,128 +182,26 @@ static int read_chunk(
 static int write_chunk(
     struct yaffs_dev *d, int page, const u8 *data, int bytes, const u8 *oob, int on)
 {
-#if WATCH_NAND_WRITE_TRACE
-    static uint8_t verify[DS35_PAGE], tag_verify[DS35_TAG_CAPACITY];
-    if (d->read_only || scan_error || !nand.writable || page == 46 ||
-        bytes != DS35_PAGE || !data || !oob || on <= 0 || on > DS35_TAG_CAPACITY) {
-        mb8_storage_log("[NAND WRITE] program denied page=%d RO=%u failed=%u writable=%u bytes=%d tags=%d\r\n",
-            page, (unsigned)d->read_only, (unsigned)scan_error, (unsigned)nand.writable, bytes, on);
-        return YAFFS_FAIL;
-    }
-    int blank = ds35_read(&nand, (uint32_t)page, verify, sizeof(verify), tag_verify, sizeof(tag_verify));
-    if (blank < 0) {
-        mb8_storage_log("[NAND WRITE] blank-check read failed page=%d rc=%d phase=%s\r\n", page, blank, nand.operation.phase);
-        scan_error = true; nand.writable = false; return YAFFS_FAIL;
-    }
-    for (unsigned i = 0; i < sizeof(verify); i++)
-        if (verify[i] != 0xff) {
-            mb8_storage_log("[NAND WRITE] blank-check failed page=%d main-offset=%u\r\n", page, i);
-            scan_error = true; nand.writable = false; return YAFFS_FAIL;
-        }
-    for (unsigned i = 0; i < sizeof(tag_verify); i++)
-        if (tag_verify[i] != 0xff) {
-            mb8_storage_log("[NAND WRITE] blank-check failed page=%d user-OOB-offset=%u\r\n", page, i + 4);
-            scan_error = true; nand.writable = false; return YAFFS_FAIL;
-        }
-    mb8_storage_log("[NAND WRITE] page=%d input0=%02x input-fnv=%08x tags-fnv=%08x read-target=%u program-target=%u\r\n",
-        page, (unsigned)data[0], (unsigned)debug_hash(data, (unsigned)bytes), (unsigned)debug_hash(oob, (unsigned)on),
-        (unsigned)mb8_nand_board.clock_hz,
-#if WATCH_NAND_TRACE_CLOCK == 48000000
-        (unsigned)mb8_nand_board.clock_hz);
-#else
-        (unsigned)(mb8_nand_board.clock_hz < 12000000u ? mb8_nand_board.clock_hz : 12000000u));
-#endif
-    int result = ds35_program(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
-    if (result < 0) { scan_error = true; nand.writable = false;
-        mb8_storage_log("[NAND WRITE] PROGRAM FAIL page=%d rc=%d phase=%s status-valid=%u C0=%02x\r\n",
-            page, result, nand.operation.phase, (unsigned)nand.operation.status_valid, (unsigned)nand.operation.status);
-        return YAFFS_FAIL; }
-    result = ds35_read(&nand, (uint32_t)page, verify, sizeof(verify), tag_verify, (size_t)on);
-    if (result < 0) { scan_error = true; nand.writable = false;
-        mb8_storage_log("[NAND WRITE] VERIFY READ FAIL page=%d rc=%d phase=%s\r\n", page, result, nand.operation.phase); return YAFFS_FAIL; }
-    unsigned diffs = 0, first = 0;
-    for (unsigned i = 0; i < sizeof(verify); i++) if (verify[i] != data[i]) { if (!diffs) first=i; diffs++; }
-    unsigned td = 0; for (int i=0;i<on;i++) if (tag_verify[i] != oob[i]) td++;
-    mb8_storage_log("[NAND WRITE] VERIFY page=%d rc=%d status-valid=%u C0=%02x got0=%02x got-fnv=%08x data-diffs=%u first=%d expected=%02x actual=%02x tag-diffs=%u\r\n",
-        page, result, (unsigned)nand.operation.status_valid, (unsigned)nand.operation.status, (unsigned)verify[0], (unsigned)debug_hash(verify,sizeof(verify)), diffs,
-        diffs ? (int)first : -1, diffs ? (unsigned)data[first] : 0u, diffs ? (unsigned)verify[first] : 0u, td);
-    if (diffs || td) { scan_error = true; nand.writable = false; return YAFFS_FAIL; }
-    return YAFFS_OK;
-#elif WATCH_NAND_DEBUG_REPRO
-    (void)d; (void)page; (void)data; (void)bytes; (void)oob; (void)on;
-    return YAFFS_FAIL;
-#endif
     if (d->read_only || scan_error || !nand.writable)
         return YAFFS_FAIL;
-#if WATCH_NAND_FULL_FORMAT
-    if (format_io_failed || scan_error)
-    {
-        format_io_failed = true;
-        nand.writable    = false;
-        return YAFFS_FAIL;
-    }
-#endif
     int r = ds35_program(&nand, (uint32_t)page, data, (size_t)bytes, oob, (size_t)on);
     if (r != DS35_OK)
     {
         scan_error = true;
         nand.writable = false;
-#if WATCH_NAND_FULL_FORMAT
-        format_io_failed = true;
-#endif
     }
     return r == DS35_OK ? YAFFS_OK : YAFFS_FAIL;
 }
 
 static int erase_block(struct yaffs_dev *d, int block)
 {
-#if WATCH_NAND_WRITE_TRACE
-    int internal = block + d->block_offset;
-    bool checkpoint = false, reclaim = false;
-    unsigned state = 0, pages = 0, bits = 0, retiring = 0;
-    if (block >= 1 && internal >= (int)d->internal_start_block &&
-        internal <= (int)d->internal_end_block) {
-        struct yaffs_block_info *bi = yaffs_get_block_info(d, internal);
-        state = bi->block_state; pages = bi->pages_in_use; retiring = bi->needs_retiring;
-        checkpoint = state == YAFFS_BLOCK_STATE_CHECKPOINT;
-        if (state == YAFFS_BLOCK_STATE_DIRTY) {
-            bits = (unsigned)yaffs_count_chunk_bits(d, internal);
-            reclaim = !retiring && pages == 0 && bits == 0;
-        }
-    }
-    if (d->read_only || scan_error || !nand.writable || !(checkpoint || reclaim)) {
-        mb8_storage_log("[NAND WRITE] refused erase block=%d state=%u pages=%u bits=%u retiring=%u read-only=%u writable=%u\r\n",
-            block, state, pages, bits, retiring, (unsigned)d->read_only, (unsigned)nand.writable);
-        scan_error = true; nand.writable = false;
-        return YAFFS_FAIL;
-    }
-    int result = ds35_erase(&nand, (uint32_t)block);
-    mb8_storage_log("[NAND WRITE] erase block=%d reason=%s state=%u pages=%u bits=%u rc=%d\r\n",
-        block, checkpoint ? "checkpoint" : "empty YAFFS dirty block", state, pages, bits, result);
-    if (result != DS35_OK) { scan_error = true; nand.writable = false; return YAFFS_FAIL; }
-    return YAFFS_OK;
-#elif WATCH_NAND_DEBUG_REPRO
-    (void)d; (void)block;
-    return YAFFS_FAIL;
-#endif
     if (d->read_only || scan_error || !nand.writable)
         return YAFFS_FAIL;
-#if WATCH_NAND_FULL_FORMAT
-    if (format_io_failed || scan_error)
-    {
-        format_io_failed = true;
-        nand.writable    = false;
-        return YAFFS_FAIL;
-    }
-#endif
     int r = ds35_erase(&nand, (uint32_t)block);
     if (r != DS35_OK)
     {
         scan_error = true;
         nand.writable = false;
-#if WATCH_NAND_FULL_FORMAT
-        format_io_failed = true;
-#endif
     }
     return r == DS35_OK ? YAFFS_OK : YAFFS_FAIL;
 }
@@ -377,9 +215,6 @@ static int mark_bad(struct yaffs_dev *d, int block)
     (void)block;
     scan_error = true;
     nand.writable = false;
-#if WATCH_NAND_FULL_FORMAT
-    format_io_failed = true;
-#endif
     return YAFFS_FAIL;
 }
 
@@ -391,9 +226,6 @@ static int check_bad(struct yaffs_dev *d, int block)
     {
         scan_error = true;
         nand.writable = false;
-#if WATCH_NAND_FULL_FORMAT
-        format_io_failed = true;
-#endif
     }
     return r == DS35_OK ? YAFFS_OK : YAFFS_FAIL;
 }
@@ -413,9 +245,6 @@ static int query_block(struct yaffs_dev *d, int block, enum yaffs_block_state *s
     {
         scan_error = true;
         nand.writable = false;
-#if WATCH_NAND_FULL_FORMAT
-        format_io_failed = true;
-#endif
         return YAFFS_FAIL;
     }
     struct yaffs_ext_tags tags = {0};
@@ -426,9 +255,6 @@ static int query_block(struct yaffs_dev *d, int block, enum yaffs_block_state *s
          * tag ECC means that sequence is not safe to use for mount scanning. */
         scan_error = true;
         nand.writable = false;
-#if WATCH_NAND_FULL_FORMAT
-        format_io_failed = true;
-#endif
         return YAFFS_FAIL;
     }
     *state = tags.chunk_used ? YAFFS_BLOCK_STATE_NEEDS_SCAN : YAFFS_BLOCK_STATE_EMPTY;
@@ -451,7 +277,8 @@ const char *mb8_storage_status(void)
  * race filesystem state or YAFFS's global errno. */
 static bool claim_worker(void)
 {
-    if (!task_context() || (owner && owner != xTaskGetCurrentTaskHandle()))
+    if (!task_context() || !mb8_storage_is_worker() ||
+        (owner && owner != xTaskGetCurrentTaskHandle()))
         return false;
     owner = xTaskGetCurrentTaskHandle();
     return true;
@@ -548,600 +375,17 @@ int mb8_storage_get_usage(struct mb8_storage_usage *u)
     return 0;
 }
 
-int mb8_storage_read_sample(uint32_t relative_page, void *data, size_t bytes)
-{
-    if (!claim_worker() || !dev.is_mounted || !dev.read_only || !data || !bytes ||
-        bytes > DS35_PAGE || relative_page >= partition_count() * DS35_PAGES_PER_BLOCK)
-        return DS35_EINVAL;
-    uint32_t page = partition_first() * DS35_PAGES_PER_BLOCK + relative_page;
-    int      r    = ds35_check_bad(&nand, page / DS35_PAGES_PER_BLOCK);
-    if (r != DS35_OK)
-        return r;
-    return ds35_read(&nand, page, data, bytes, NULL, 0);
-}
-
-#if WATCH_NAND_DEBUG_REPRO
-int mb8_storage_debug_compare_page(uint32_t page)
-{
-    static uint8_t baseline[DS35_PAGE], sample[DS35_PAGE];
-    uint8_t tags[28];
-    if (!claim_worker() || !dev.is_mounted || !dev.read_only ||
-        nand.writable || scan_error || page >= DS35_BLOCKS * DS35_PAGES_PER_BLOCK)
-    {
-        mb8_storage_log("[NAND DEBUG] raw comparison unavailable (state/page/read error).\r\n");
-        return DS35_EINVAL;
-    }
-    bool mismatch = false;
-    for (unsigned i = 0; i < 4; i++)
-    {
-        bool serial = (i & 1u) != 0;
-        uint8_t *dest = i ? sample : baseline;
-        int r = serial ? ds35_read_x1_reference(&nand, page, dest, DS35_PAGE)
-                       : ds35_read(&nand, page, dest, DS35_PAGE, tags, sizeof(tags));
-        if (r < 0)
-        {
-            scan_error = true;
-            const struct mb8_nand_diagnostic *b = mb8_nand_bus_diagnostic();
-            mb8_storage_log("[NAND DEBUG] raw page=%u pass=%u mode=%s FAIL rc=%d phase=%s bus=%d stage=%s HAL-valid=%u HAL=%u\r\n",
-                (unsigned)page, i + 1, serial ? "serial03-PIO12" : "quad6B-DMA+tags",
-                r, nand.operation.phase ? nand.operation.phase : "none", b->result,
-                b->stage ? b->stage : "none", (unsigned)b->hal_valid, (unsigned)b->hal_status);
-            return r;
-        }
-        unsigned differences = 0, first = DS35_PAGE;
-        if (i)
-            for (unsigned j = 0; j < DS35_PAGE; j++)
-                if (dest[j] != baseline[j]) {
-                    if (!differences) first = j;
-                    differences++;
-                }
-        if (differences) mismatch = true;
-        mb8_storage_log("[NAND DEBUG] raw page=%u pass=%u mode=%s target-clock=%u rc=%d status-valid=%u C0=%02x first-byte=%02x fnv=%08x diff-vs-pass1=%u first-diff=%d\r\n",
-            (unsigned)page, i + 1, serial ? "serial03-PIO12" : "quad6B-DMA+tags",
-            serial ? 12000000u : (unsigned)mb8_nand_board.clock_hz,
-            r, (unsigned)nand.operation.status_valid, (unsigned)nand.operation.status,
-            (unsigned)dest[0], (unsigned)debug_hash(dest, DS35_PAGE), differences,
-            first == DS35_PAGE ? -1 : (int)first);
-    }
-    return mismatch ? DS35_IO : DS35_OK;
-}
-
-int mb8_storage_debug_compare_last_page(void)
-{
-    return mb8_storage_debug_compare_page(debug_page_valid ? debug_page : UINT32_MAX);
-}
-#endif
-
-#if WATCH_NAND_STARTUP_TESTS
-static struct mb8_storage_raw_diagnostic raw_diagnostic;
-
-const struct mb8_storage_raw_diagnostic *mb8_storage_raw_diagnostic(void)
-{
-    return &raw_diagnostic;
-}
-
-int mb8_storage_raw_read_pair(uint32_t physical_page, void *first, void *second, size_t bytes)
-{
-    if (!claim_worker() || dev.is_mounted || !first || !second || !bytes || bytes > 256 ||
-        physical_page >= DS35_BLOCKS * DS35_PAGES_PER_BLOCK)
-        return DS35_EINVAL;
-    /* No automatic retry, and no replacement of first evidence by a later
-     * poisoned-open NOT_READY. A firmware boot resets this temporary state. */
-    if ((raw_diagnostic.primary_result < 0 && raw_diagnostic.primary_result != DS35_BAD) ||
-        raw_diagnostic.shutdown_result < 0 || raw_diagnostic.bus_result < 0)
-    {
-        if (raw_diagnostic.primary_result < 0 && raw_diagnostic.primary_result != DS35_BAD)
-            return raw_diagnostic.primary_result;
-        return raw_diagnostic.shutdown_result < 0 ? raw_diagnostic.shutdown_result
-                                                  : raw_diagnostic.bus_result;
-    }
-    raw_diagnostic =
-        (struct mb8_storage_raw_diagnostic){.page = physical_page, .phase = "bus-open"};
-    struct ds35_bus bus;
-    int             r = mb8_nand_bus_open(&bus);
-    if (r < 0)
-    {
-        raw_diagnostic.primary_result = r;
-        raw_diagnostic.bus_result     = mb8_nand_bus_diagnostic()->result;
-        status_text                   = "RAW bus open failed; no later RAW/filesystem checks";
-        return r;
-    }
-    /* Explicit RAW diagnostic block, NOT a filesystem partition. */
-    raw_diagnostic.phase = "probe";
-    mb8_nand_diag_probe_started();
-    r = ds35_probe(&nand, &bus, physical_page / DS35_PAGES_PER_BLOCK, 1);
-    if (r == DS35_OK)
-    {
-        raw_diagnostic.phase = "bad-block-markers";
-        r                    = ds35_check_bad(&nand, physical_page / DS35_PAGES_PER_BLOCK);
-    }
-    if (r == DS35_OK)
-    {
-        raw_diagnostic.phase = "first-data-read";
-        r                    = ds35_read(&nand, physical_page, first, bytes, NULL, 0);
-    }
-    if (r >= 0)
-    {
-        raw_diagnostic.phase = "repeat-data-read";
-        r                    = ds35_read(&nand, physical_page, second, bytes, NULL, 0);
-    }
-    if (r >= 0 && memcmp(first, second, bytes))
-    {
-        raw_diagnostic.phase = "repeat-consistency";
-        r                    = DS35_IO;
-    }
-    raw_diagnostic.primary_result  = r;
-    raw_diagnostic.shutdown_result = ds35_shutdown(&nand);
-    mb8_nand_bus_close();
-    raw_diagnostic.bus_result = mb8_nand_bus_diagnostic()->result;
-    if ((r < 0 && r != DS35_BAD) || raw_diagnostic.shutdown_result < 0 ||
-        raw_diagnostic.bus_result < 0)
-        status_text =
-            "RAW operation/cleanup failed; no later RAW/filesystem checks (see diagnostics)";
-    /* Keep a real primary error; NOT_READY during cleanup must not erase it.
-     * BAD alone is harmless ONLY when both feature restore and close succeed. */
-    if (r < 0 && r != DS35_BAD)
-        return r;
-    if (raw_diagnostic.shutdown_result < 0)
-        return raw_diagnostic.shutdown_result;
-    if (raw_diagnostic.bus_result < 0)
-        return raw_diagnostic.bus_result;
-    return r;
-}
-
-static uint32_t raw_fingerprint(const uint8_t *data)
-{
-    uint32_t hash = 2166136261u;
-    for (size_t i = 0; i < DS35_PAGE; i++)
-        hash = (hash ^ data[i]) * 16777619u;
-    return hash;
-}
-
-static int raw_reference(
-    uint32_t page, const uint8_t *quad, uint8_t *serial, struct mb8_stock_scan *summary)
-{
-    raw_diagnostic.page  = page;
-    raw_diagnostic.phase = "inventory-serial03-reference";
-    int r                = ds35_read_x1_reference(&nand, page, serial, DS35_PAGE);
-    if (r < 0)
-        return r;
-    for (uint32_t offset = 0; offset < DS35_PAGE; offset++)
-    {
-        if (quad[offset] == serial[offset])
-            continue;
-        summary->mismatch           = true;
-        summary->mismatch_page      = page;
-        summary->mismatch_offset    = offset;
-        summary->quad_fingerprint   = raw_fingerprint(quad);
-        summary->serial_fingerprint = raw_fingerprint(serial);
-        raw_diagnostic.phase        = "inventory-serial-quad-disagreement";
-        nand.operation.phase        = raw_diagnostic.phase;
-        nand.operation.page         = page;
-        nand.operation.result       = DS35_IO;
-        scan_error = true; /* Data not trusted. Still attempt clean feature restoration. */
-        return DS35_IO;
-    }
-    summary->reference_agree++;
-    return DS35_OK;
-}
-
-int mb8_storage_raw_inventory(
-    mb8_stock_page_visitor visitor, void *context, struct mb8_stock_scan *summary)
-{
-    _Static_assert(MB8_STOCK_SCAN_FIRST_PAGE < DS35_BLOCKS * DS35_PAGES_PER_BLOCK,
-        "Stock census resume page outside chip");
-    static uint8_t main_data[DS35_PAGE], serial_data[DS35_PAGE];
-    if (!summary)
-        return DS35_EINVAL;
-    memset(summary, 0, sizeof(*summary));
-    summary->first_page = summary->next_page = MB8_STOCK_SCAN_FIRST_PAGE;
-    if (!claim_worker() || dev.is_mounted || !visitor)
-        return DS35_EINVAL;
-    if ((raw_diagnostic.primary_result < 0 && raw_diagnostic.primary_result != DS35_BAD) ||
-        raw_diagnostic.shutdown_result < 0 || raw_diagnostic.bus_result < 0)
-        return DS35_NOT_READY;
-    raw_diagnostic = (struct mb8_storage_raw_diagnostic){.phase = "inventory-bus-open"};
-    struct ds35_bus bus;
-    int             r = mb8_nand_bus_open(&bus);
-    if (r < 0)
-    {
-        raw_diagnostic.primary_result = r;
-        raw_diagnostic.bus_result     = mb8_nand_bus_diagnostic()->result;
-        status_text                   = "RAW census bus open failed; no later filesystem checks";
-        return r;
-    }
-    /* Explicit whole-chip READ permission for diagnostics, not a partition or
-     * filesystem profile. Neither this code nor reference reads authorize writes. */
-    raw_diagnostic.phase = "inventory-probe";
-    mb8_nand_diag_probe_started();
-    r                            = ds35_probe(&nand, &bus, 0, DS35_BLOCKS);
-    TickType_t started           = xTaskGetTickCount();
-    summary->reference_available = bus.data_width == 4;
-    const uint32_t references[]  = {0, 1, DS35_BLOCKS * DS35_PAGES_PER_BLOCK - 1};
-    for (unsigned i = 0; r >= 0 && summary->reference_available && i < 3; i++)
-    {
-        if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(MB8_STOCK_SCAN_MS))
-        {
-            summary->time_limited = true;
-            break;
-        }
-        raw_diagnostic.page  = references[i];
-        raw_diagnostic.phase = "inventory-reference-bad-markers";
-        r                    = ds35_check_bad(&nand, references[i] / DS35_PAGES_PER_BLOCK);
-        if (r == DS35_BAD)
-        {
-            summary->reference_bad++;
-            r = DS35_OK;
-            continue;
-        }
-        if (r >= 0)
-        {
-            raw_diagnostic.phase = "inventory-reference-quad2048";
-            r                    = ds35_read(&nand, references[i], main_data, DS35_PAGE, NULL, 0);
-        }
-        if (r >= 0)
-            r = raw_reference(references[i], main_data, serial_data, summary);
-        vTaskDelay(1);
-    }
-    unsigned extra_references = 0;
-    uint32_t checked_block    = DS35_BLOCKS;
-    while (r >= 0 && summary->next_page < DS35_BLOCKS * DS35_PAGES_PER_BLOCK)
-    {
-        if ((TickType_t)(xTaskGetTickCount() - started) >= pdMS_TO_TICKS(MB8_STOCK_SCAN_MS))
-        {
-            summary->time_limited = true;
-            break;
-        }
-        uint32_t page = summary->next_page, block = page / DS35_PAGES_PER_BLOCK;
-        raw_diagnostic.page = page;
-        if (block != checked_block)
-        {
-            raw_diagnostic.phase = "inventory-bad-block-markers";
-            r                    = ds35_check_bad(&nand, block);
-            if (r == DS35_BAD)
-            {
-                summary->bad_blocks++;
-                summary->next_page = (block + 1) * DS35_PAGES_PER_BLOCK;
-                summary->bad_pages += summary->next_page - page;
-                r = DS35_OK;
-                vTaskDelay(1);
-                continue;
-            }
-            if (r < 0)
-                break;
-            checked_block = block;
-        }
-        raw_diagnostic.phase = "inventory-ECC-main-read";
-        r                    = ds35_read(&nand, page, main_data, sizeof(main_data), NULL, 0);
-        if (r < 0)
-            break;
-        summary->corrected_pages += r == DS35_CORRECTED;
-        /* Cross-check up to4 nonempty census pages beyond the3 preflight pages.
-         * No comparison of the two buffers is printed as payload. */
-        if (summary->reference_available && extra_references < 4 && page > 1 && page != 65535)
-        {
-            bool erased = true, zero = true;
-            for (size_t i = 0; i < DS35_PAGE; i++)
-            {
-                erased &= main_data[i] == 0xff;
-                zero &= main_data[i] == 0;
-            }
-            if (!erased && !zero)
-            {
-                r = raw_reference(page, main_data, serial_data, summary);
-                if (r < 0)
-                    break;
-                extra_references++;
-            }
-        }
-        summary->pages++;
-        summary->next_page = page + 1;
-        if (!visitor(page, main_data, context))
-        {
-            summary->visitor_stopped = true;
-            break;
-        }
-        if ((summary->pages & 15u) == 0)
-            vTaskDelay(1);
-    }
-    raw_diagnostic.primary_result  = r;
-    raw_diagnostic.shutdown_result = ds35_shutdown(&nand);
-    mb8_nand_bus_close();
-    raw_diagnostic.bus_result = mb8_nand_bus_diagnostic()->result;
-    if (r < 0 || raw_diagnostic.shutdown_result < 0 || raw_diagnostic.bus_result < 0)
-        status_text = "RAW census/reference operation/cleanup failed; no later filesystem checks";
-    if (r < 0)
-        return r;
-    if (raw_diagnostic.shutdown_result < 0)
-        return raw_diagnostic.shutdown_result;
-    if (raw_diagnostic.bus_result < 0)
-        return raw_diagnostic.bus_result;
-    return DS35_OK;
-}
-
-#endif
-#if WATCH_NAND_FULL_FORMAT
-#include "mb8_storage_log.h"
-static uint8_t format_main[DS35_PAGE], format_tags[28];
-
-static void consensus_evidence(uint32_t page, bool fast, int r, const struct ds35_read_consensus *e)
-{
-    mb8_storage_log(
-        "[NAND FORMAT] %s page=%u rc=%d pass=%u mode=%u offset=%u serial-page-fnv=%08x compared-window-fnv=%08x\r\n",
-        fast ? "optional48 diagnostic" : "MANDATORY12 consensus",
-        (unsigned)page,
-        r,
-        e->pass,
-        e->mode,
-        e->offset,
-        (unsigned)e->serial_hash,
-        (unsigned)e->compared_hash);
-    if (e->policy_reset_result < 0)
-        mb8_storage_log("[NAND FORMAT] read-policy reset-to12 FAILED rc=%d; no unlock/erase even if48 data mismatch is otherwise optional\r\n", e->policy_reset_result);
-    if (e->mismatch)
-    {
-        /* Bounded read-debug bytes only. The user authorized discarding stock
-         * data; no full file/page dump. Both arrays start at the failed window. */
-        for (unsigned i = 0; i < sizeof(e->serial_bytes); i += 4)
-            mb8_storage_log("[NAND FORMAT] window+%u x1=%02x%02x%02x%02x x4=%02x%02x%02x%02x\r\n",
-                i,
-                e->serial_bytes[i],
-                e->serial_bytes[i + 1],
-                e->serial_bytes[i + 2],
-                e->serial_bytes[i + 3],
-                e->compared_bytes[i],
-                e->compared_bytes[i + 1],
-                e->compared_bytes[i + 2],
-                e->compared_bytes[i + 3]);
-    }
-}
-
-static uint8_t pattern_byte(uint32_t page, unsigned i)
-{
-    /* Word/lane/order-sensitive, not a uniform FF/00 repeat. */
-    uint32_t x = (page + 1u) * 0x9e3779b9u + i * 0x45d9f3bu;
-    return (uint8_t)(x ^ (x >> 11) ^ (x >> 23));
-}
-
-int mb8_storage_full_erase(void)
-{
-    if (!claim_worker() || dev.is_mounted || registered)
-        return DS35_NOT_READY;
-    format_provisioned = false;
-    format_io_failed   = false;
-    struct ds35_bus bus;
-    int             r = mb8_nand_bus_open(&bus);
-    if (r < 0)
-    {
-        status_text = mb8_nand_bus_diagnostic()->reason;
-        return r;
-    }
-    mb8_nand_diag_probe_started();
-    r                = ds35_probe(&nand, &bus, 0, DS35_BLOCKS);
-    uint32_t    good = 0, bad = 0, first = DS35_BLOCKS, last = 0, erased = 0, verified = 0;
-    TickType_t  started = xTaskGetTickCount();
-    const char *phase   = "probe";
-    if (r < 0)
-        goto close;
-    raw_identified   = true;
-    raw_status_valid = false;
-    phase            = "factory bad-block inventory BEFORE unlock";
-    for (uint32_t b = 0; b < DS35_BLOCKS; b++)
-    {
-        r = ds35_check_bad(&nand, b);
-        if (r == DS35_BAD)
-            bad++;
-        else if (r == DS35_OK)
-        {
-            if (first == DS35_BLOCKS)
-                first = b;
-            last = b;
-            good++;
-        }
-        else
-            goto close;
-        if ((b & 15u) == 15u)
-            vTaskDelay(1);
-    }
-    if (good < 16)
-    {
-        r = DS35_BAD;
-        goto close;
-    }
-    mb8_storage_log("[NAND FORMAT] factory-good=%u factory-bad=%u; no unlock/program/erase yet\r\n",
-        (unsigned)good,
-        (unsigned)bad);
-    const uint32_t samples[] = {first * DS35_PAGES_PER_BLOCK,
-        first * DS35_PAGES_PER_BLOCK + 1u,
-        last * DS35_PAGES_PER_BLOCK + 63u};
-    phase                    = "mandatory12 same-cache preflight BEFORE unlock";
-    for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); i++)
-    {
-        struct ds35_read_consensus e;
-        r = ds35_read_consensus(&nand, samples[i], false, &e);
-        consensus_evidence(samples[i], false, r, &e);
-        if (r < 0)
-            goto close;
-    }
-    if (mb8_nand_board.clock_hz == 48000000u)
-    {
-        struct ds35_read_consensus e;
-        r = ds35_read_consensus(&nand, samples[0], true, &e);
-        consensus_evidence(samples[0], true, r, &e);
-        /* A healthy48 data mismatch is diagnostic, not a12MHz gate. A HAL or
-         * ECC failure still stops: never replay a poisoned transport. */
-        if (r < 0 && (!e.mismatch || nand.fault))
-            goto close;
-        r = DS35_OK;
-    }
-    phase = "authorized A0 unlock AFTER12 consensus";
-    r     = ds35_allow_writes(&nand);
-    if (r < 0)
-        goto close;
-    mb8_storage_log(
-        "[NAND FORMAT] READY:12 consensus passed; destructive scratch block=%u, then all factory-good blocks0..1023;12MHz only\r\n",
-        (unsigned)first);
-    phase = "scratch erase/program/read known pattern";
-    r     = ds35_erase(&nand, first);
-    if (r < 0)
-        goto close;
-    /* Test first two pages, protecting marker bytes: program writes main plus
-     * OOB4..31 only; all other user spare bytes remain FF. */
-    for (uint32_t page = first * DS35_PAGES_PER_BLOCK; page < first * DS35_PAGES_PER_BLOCK + 2;
-        page++)
-    {
-        for (unsigned i = 0; i < sizeof(format_main); i++)
-            format_main[i] = pattern_byte(page, i);
-        for (unsigned i = 0; i < sizeof(format_tags); i++)
-            format_tags[i] = pattern_byte(page, i + DS35_PAGE);
-        r = ds35_program(
-            &nand, page, format_main, sizeof(format_main), format_tags, sizeof(format_tags));
-        if (r < 0)
-            goto close;
-        r = ds35_read(
-            &nand, page, format_main, sizeof(format_main), format_tags, sizeof(format_tags));
-        if (r < 0)
-            goto close;
-        for (unsigned i = 0; i < sizeof(format_main); i++)
-            if (format_main[i] != pattern_byte(page, i))
-            {
-                r = DS35_IO;
-                goto close;
-            }
-        for (unsigned i = 0; i < sizeof(format_tags); i++)
-            if (format_tags[i] != pattern_byte(page, i + DS35_PAGE))
-            {
-                r = DS35_IO;
-                goto close;
-            }
-        struct ds35_read_consensus e;
-        nand.writable = false; /* Comparison helper is always read-only. */
-        r             = ds35_read_consensus(&nand, page, false, &e);
-        consensus_evidence(page, false, r, &e);
-        if (r < 0)
-            goto close;
-        nand.writable = true;
-    }
-    /* Physically re-read both factory-marker locations after scratch writes;
-     * cached good-block state cannot prove marker preservation. */
-    phase = "physical scratch factory-marker recheck";
-    nand.checked[first / 8u] &= (uint8_t)~(1u << (first % 8u));
-    r = ds35_check_bad(&nand, first);
-    if (r != DS35_OK)
-        goto close;
-    mb8_storage_log(
-        "[NAND FORMAT] known-pattern scratch PASS; now full usable-chip erase + every-page main/OOB4..63 FF verification\r\n");
-    phase = "full erase and every-page verification";
-    for (uint32_t b = 0; b < DS35_BLOCKS; b++)
-    {
-        if (nand.bad[b / 8] & (1u << (b % 8)))
-            continue;
-        r = ds35_erase(&nand, b);
-        if (r < 0)
-            goto close;
-        erased++;
-        for (uint32_t j = 0; j < DS35_PAGES_PER_BLOCK; j++)
-        {
-            uint8_t tags[DS35_TAG_CAPACITY];
-            r = ds35_read(&nand,
-                b * DS35_PAGES_PER_BLOCK + j,
-                format_main,
-                sizeof(format_main),
-                tags,
-                sizeof(tags));
-            if (r < 0)
-                goto close;
-            for (unsigned i = 0; i < sizeof(format_main); i++)
-                if (format_main[i] != 0xff)
-                {
-                    r = DS35_IO;
-                    goto close;
-                }
-            for (unsigned i = 0; i < sizeof(tags); i++)
-                if (tags[i] != 0xff)
-                {
-                    r = DS35_IO;
-                    goto close;
-                }
-            verified++;
-            if ((j & 15u) == 15u)
-                vTaskDelay(1);
-        }
-        if ((b & 15u) == 15u)
-            mb8_storage_log(
-                "[NAND FORMAT] progress block=%u/1024 erased-good=%u verified-pages=%u\r\n",
-                (unsigned)(b + 1),
-                (unsigned)erased,
-                (unsigned)verified);
-    }
-    r = DS35_OK;
-close:;
-    /* Primary error is never replaced by close error. No retries, no new bad
-     * marks, no persistent provisioning marker. Healthy close restores A0/B0. */
-    int primary   = r;
-    nand.writable = false;
-    int shutdown  = ds35_shutdown(&nand);
-    mb8_nand_bus_close();
-    int bus_result = mb8_nand_bus_diagnostic()->result;
-    mb8_storage_log(
-        "[NAND FORMAT] phase=%s primary=%d shutdown=%d bus=%d erased=%u/%u bad-skipped=%u verified-main+user-tag-pages=%u ticks=%u tick-Hz=%u\r\n",
-        phase,
-        primary,
-        shutdown,
-        bus_result,
-        (unsigned)erased,
-        (unsigned)good,
-        (unsigned)bad,
-        (unsigned)verified,
-        (unsigned)(xTaskGetTickCount() - started),
-        (unsigned)configTICK_RATE_HZ);
-    if (primary < 0)
-    {
-        mb8_storage_log("[NAND FORMAT] core phase=%s physical-page=%u block=%u primary=%d\r\n",
-            nand.operation.phase ? nand.operation.phase : "unavailable",
-            (unsigned)nand.operation.page,
-            (unsigned)(nand.operation.page / 64u),
-            primary);
-        if (nand.operation.status_valid)
-            mb8_storage_log(
-                "[NAND FORMAT] last completed C0=%02x\r\n", (unsigned)nand.operation.status);
-    }
-    if (primary >= 0 && shutdown >= 0 && bus_result >= 0 && erased == good &&
-        verified == good * 64u)
-    {
-        format_provisioned = true;
-        status_text =
-            "full good-block erase verified; own OOB4 YAFFS profile authorized THIS BOOT ONLY";
-        return DS35_OK;
-    }
-    format_io_failed = true;
-    status_text =
-        "FORMAT INCOMPLETE; no filesystem provisioning; inspect primary/protection/cleanup evidence";
-    return primary < 0 ? primary : shutdown < 0 ? shutdown : bus_result < 0 ? bus_result : DS35_IO;
-}
-#endif
-
 int mb8_storage_mount(bool read_only)
 {
-#if WATCH_NAND_DEBUG_REPRO
-    if (!read_only && !WATCH_NAND_WRITE_TRACE) { status_text = "debug build forbids all writable mounts"; return -1; }
-#endif
-    if (!task_context())
+    if (!task_context() || !mb8_storage_is_worker())
     {
-        status_text = "NAND mount requires a running storage worker task";
+        status_text = "NAND mount requires the storage worker task";
         return -1;
     }
     if (owner && owner != xTaskGetCurrentTaskHandle())
         return -1;
     if (dev.is_mounted)
         return -1;
-#if WATCH_NAND_FULL_FORMAT
-    if (format_io_failed)
-    {
-        status_text = "format/test I/O failure latched; no more mounts or writes this boot";
-        return -1;
-    }
-#endif
     /* Validate the complete map before opening the bus. It supplies physical
      * eraseblock bounds only and never grants access to the contents. */
     struct mb8_partition_range selected;
@@ -1210,12 +454,6 @@ int mb8_storage_mount(bool read_only)
         dev.param.end_block             = selected_partition.last_block;
         dev.param.n_reserved_blocks     = 5;
         dev.param.n_caches              = MB8_NAND_CACHE_PAGES;
-#if WATCH_NAND_WRITE_TRACE
-        dev.param.skip_checkpt_wr       = 1;
-        dev.param.disable_bad_block_marking = 1;
-        extern unsigned int yaffs_wr_attempts;
-        yaffs_wr_attempts = 1;
-#endif
         dev.param.cache_bypass_aligned  = 1;
         dev.param.use_nand_ecc          = 1;
         dev.param.no_tags_ecc           = 0;
@@ -1250,9 +488,6 @@ int mb8_storage_mount(bool read_only)
          */
         if (ds35_allow_writes(&nand) != DS35_OK || yaffs_remount("/nand", 0, 0) < 0 ||
             scan_error || nand.fault
-#if WATCH_NAND_FULL_FORMAT
-            || format_io_failed
-#endif
         )
         {
             nand.writable = false;
@@ -1267,15 +502,6 @@ int mb8_storage_mount(bool read_only)
     return 0;
 }
 
-#if WATCH_NAND_WRITE_TRACE
-void mb8_storage_write_trace_abort(void)
-{
-    /* Prevent further array mutations during forced cleanup after any failure. */
-    scan_error = true;
-    nand.writable = false;
-    dev.read_only = 1;
-}
-#endif
 
 int mb8_storage_unmount(void)
 {
@@ -1303,13 +529,6 @@ int mb8_storage_unmount(void)
         status_text = "NAND I/O failure retained despite hardware cleanup; filesystem needs inspection";
         return -1;
     }
-#if WATCH_NAND_FULL_FORMAT
-    if (format_io_failed)
-    {
-        status_text = "format/test I/O failure retained despite successful hardware cleanup";
-        return -1;
-    }
-#endif
     if (mb8_nand_bus_diagnostic()->result < 0)
     {
         status_text = "NAND bus close failed; reset required";

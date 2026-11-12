@@ -15,17 +15,6 @@
 #if WATCH_NAND_STOCK_RX_TIMING != 0 && WATCH_NAND_STOCK_RX_TIMING != 1
 #error "WATCH_NAND_STOCK_RX_TIMING must be 0 or 1"
 #endif
-#ifndef WATCH_NAND_FULL_FORMAT
-#define WATCH_NAND_FULL_FORMAT 0
-#endif
-#ifndef WATCH_NAND_TEST_WRITE
-#define WATCH_NAND_TEST_WRITE 0
-#endif
-/* User withdrew formatting/write-test permission. Defense in depth for manual
- * compiler invocations that bypass Makefile validation; no override switch. */
-#if WATCH_NAND_FULL_FORMAT || WATCH_NAND_TEST_WRITE
-#error "Destructive boot authorization withdrawn; read-only investigation only"
-#endif
 #define DS35_MAX_CLOCK_HZ    83000000u
 #define DS35_PAGE            2048u
 #define DS35_OOB             128u
@@ -65,12 +54,6 @@ struct ds35_bus
      * false must select the known serial probe clock, and prohibit quad data;
      * it must NOT change NAND QE or issue a command itself. */
     int (*quad_ready)(void *, bool);
-#if WATCH_NAND_FULL_FORMAT
-    /* TEMP format preflight only. Read modes never issue a NAND command or
-     * enable writes. mode0=normal,1=serial PIO12,2=quad PIO12,3=quad DMA12,
-     * 4=quad DMA48. Format mode pins all subsequent quad transfers to12MHz. */
-    int (*read_mode)(void *, unsigned);
-#endif
 };
 
 /* Shutdown evidence is retained on failure; no fabricated observed value when
@@ -124,26 +107,6 @@ int ds35_shutdown(struct ds35_nand *);
 int ds35_allow_writes(struct ds35_nand *);
 int ds35_read(
     struct ds35_nand *, uint32_t page, void *data, size_t bytes, void *tags, size_t tag_bytes);
-#if WATCH_NAND_STARTUP_TESTS || WATCH_NAND_FULL_FORMAT || WATCH_NAND_DEBUG_REPRO
-/* TEMP RO cross-check only: full main page via8 separate03/x1 cache reads.
- * Does not change the configured bus width, QE or write authorization. */
-int ds35_read_x1_reference(struct ds35_nand *, uint32_t page, void *, size_t);
-#endif
-#if WATCH_NAND_FULL_FORMAT
-struct ds35_read_consensus
-{
-    unsigned mode, pass, offset;
-    int      policy_reset_result;
-    uint32_t serial_hash, compared_hash;
-    uint8_t  serial_bytes[16], compared_bytes[16];
-    bool     mismatch;
-};
-
-/* One row load, then repeated same-cache256B window comparisons. No unlock.
- * comparison48 is optional diagnostic; disagreement is NOT a12MHz gate. */
-int ds35_read_consensus(
-    struct ds35_nand *, uint32_t, bool comparison48, struct ds35_read_consensus *);
-#endif
 int ds35_program(struct ds35_nand *,
     uint32_t    page,
     const void *data,

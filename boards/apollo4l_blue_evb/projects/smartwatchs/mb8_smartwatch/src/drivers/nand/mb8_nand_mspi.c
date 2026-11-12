@@ -3,9 +3,6 @@
  * No QPI/4-4-4, XIP, display sharing, guessed pin mux, or96MHz E5 A1 operation.
  */
 #include "mb8_nand_mspi.h"
-#if WATCH_NAND_WRITE_TRACE
-#include "mb8_storage_log.h"
-#endif
 #include "mb8_nand_mspi_plan.h"
 #include "mb8_nand_board.h"
 #include "mb8_nand_diagnostics.h"
@@ -17,20 +14,6 @@ static void    *mspi;
 static bool     poisoned, quad_enabled;
 static unsigned current_width, current_address_bytes, aux_width;
 static uint32_t target_divider, current_divider;
-#if WATCH_NAND_FULL_FORMAT
-static unsigned diagnostic_read_mode;
-
-static int read_mode(void *ctx, unsigned mode)
-{
-    (void)ctx;
-    if (!mspi || poisoned || !quad_enabled || mode > 4)
-        return DS35_NOT_READY;
-    /* This only selects policy; configure_phase proves idle before any actual
-     * clock/mode/pad change. No cache load, QE change or NAND command here. */
-    diagnostic_read_mode = mode;
-    return DS35_OK;
-}
-#endif
 static uint32_t tcb[256] __attribute__((section(".shared.nand"), aligned(32)));
 /* Bounded DMA bounce: caller may use TCM or an unaligned stack buffer. */
 static uint32_t bounce[(DS35_PAGE + DS35_OOB + 3) / 4]
@@ -238,10 +221,8 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
      * explicit DEVICE + PIOMIXED + address setup for the next quad DMA is ready.
      */
     bool fast_program_pio = false;
-#if !WATCH_NAND_DEBUG_REPRO || (WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000)
     fast_program_pio = !p->dma && p->opcode == 0x84 && p->data_width == 1 &&
                        target_divider == AM_HAL_MSPI_CLK_48MHZ;
-#endif
     if (!p->dma && select_clock(AM_HAL_MSPI_CLK_12MHZ, "serial-control-clock") < 0)
         return DS35_IO;
     uint32_t status = AM_HAL_STATUS_SUCCESS;
@@ -298,25 +279,16 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
     /* Default to the conservative program-load cap; only the full-page
      * 48 MHz path with cache-prefix repair overrides it below. */
     uint32_t data_divider = mb8_nand_mspi_data_divider(p, target_divider);
-#if !WATCH_NAND_DEBUG_REPRO || (WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000)
     /* Use the on-watch-tested 48 MHz prefix repair for full quad loads.
      * Slower targets retain the conservative existing divider policy. */
     if (fast_program_pio || (p->dma && p->opcode == 0x32 &&
                              target_divider == AM_HAL_MSPI_CLK_48MHZ))
         data_divider = target_divider;
-#endif
-#if WATCH_NAND_FULL_FORMAT
-    /* Mode3 persists for the complete format/write/remount session. Only the
-     * explicitly requested read-only48MHz diagnostic can raise it. */
-    if (diagnostic_read_mode && diagnostic_read_mode != 4)
-        data_divider = AM_HAL_MSPI_CLK_12MHZ;
-#endif
     if ((p->dma || fast_program_pio) && select_clock(data_divider, fast_program_pio ? "serial-program-clock" : "quad-data-clock") < 0)
         return DS35_IO;
     /* The plan permits 6B reads only with quad DMA. Serial03 remains HAL timing. */
     if (select_receive_timing(p->opcode == 0x6b && p->receive) < 0)
         return DS35_IO;
-#if !WATCH_NAND_DEBUG_REPRO || (WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000)
     /* Restore the baseline edge after every clock/mode change. */
     const uint32_t txneg = 0u;
     MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0 = txneg;
@@ -338,11 +310,9 @@ static int configure_phase(const struct mb8_nand_mspi_plan *p)
         abort_controller();
         return DS35_IO;
     }
-#endif
     return DS35_OK;
 }
 
-#if !WATCH_NAND_DEBUG_REPRO || (WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000)
 /* Bounded equivalent of the vendor PIO TX path for cache-prefix repair. The vendor FIFO helper
  * overwrites an intermediate timeout on each word; stop on the first timeout
  * so a failed load is never followed by PROGRAM EXECUTE. The worker owns MSPI
@@ -372,10 +342,6 @@ static uint32_t program_fifo_48(uint32_t column, const uint32_t *data, uint32_t 
             _VAL2FLD(MSPI0_TXENTRIES_TXENTRIES, AM_HAL_MSPI_MAX_FIFO_SIZE), false);
         if (status != AM_HAL_STATUS_SUCCESS)
         {
-#if WATCH_NAND_WRITE_TRACE
-            mb8_storage_log("[NAND WRITE] FIFO timeout word=%u status=%u; program-execute suppressed\r\n",
-                (unsigned)i, (unsigned)status);
-#endif
             break;
         }
     }
@@ -386,7 +352,6 @@ static uint32_t program_fifo_48(uint32_t column, const uint32_t *data, uint32_t 
     MSPIn(module)->INTEN = mask;
     return status;
 }
-#endif
 
 static void done(void *ctx, uint32_t status)
 {
@@ -410,7 +375,6 @@ static int transfer(void *ctx,
     int r = mb8_nand_mspi_plan(header, hn, tx, rx, len, width, quad_enabled, &p);
     if (r < 0)
         return r;
-#if !WATCH_NAND_DEBUG_REPRO || (WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000)
     /* Save the original prefix before DMA and before reusing the bounce buffer.
      * A serial random-data load repairs it in the NAND cache before EXECUTE. */
     uint8_t prefix[4] = {0};
@@ -421,25 +385,11 @@ static int transfer(void *ctx,
             return DS35_EINVAL;
         memcpy(prefix, tx, sizeof(prefix));
     }
-#endif
-#if WATCH_NAND_FULL_FORMAT
-    if (p.opcode == 0x6b && diagnostic_read_mode == 2)
-        p.dma = false;
-#endif
     mb8_nand_diag_wire(p.opcode, p.address, (uint32_t)len, p.data_width);
     if ((r = configure_phase(&p)) < 0)
         return r;
     if (tx)
         memcpy(bounce, tx, len);
-#if WATCH_NAND_WRITE_TRACE
-    if (p.opcode == 0x32 && tx && len)
-        mb8_storage_log("[NAND WRITE] PROGRAM engine=%s opcode=%02x lanes=%u input0=%02x bounce0=%02x length=%u target-clock=%u CLKDIV=%u SEPIO=%u PIOMIXED=%u TXNEG=%u\r\n",
-            p.dma ? "DMA" : "PIO", (unsigned)p.opcode, (unsigned)p.data_width, (unsigned)tx[0], (unsigned)((uint8_t *)bounce)[0], (unsigned)len, (unsigned)(96000000u / current_divider),
-            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.CLKDIV0,
-            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.SEPIO0,
-            (unsigned)MSPIn(mb8_nand_board.mspi)->CTRL1_b.PIOMIXED,
-            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0);
-#endif
     uint32_t status;
     if (!p.dma)
     {
@@ -519,7 +469,6 @@ static int transfer(void *ctx,
     if (rx)
         memcpy(rx, bounce, len);
     am_util_delay_us(1); /* Part tCS>=100ns, conservative margin. */
-#if !WATCH_NAND_DEBUG_REPRO || (WATCH_NAND_WRITE_TRACE && WATCH_NAND_TRACE_CLOCK == 48000000)
     if (repair_prefix)
     {
         /* 32 initializes/loads the NAND cache. 84 replaces only columns 0..3
@@ -531,13 +480,6 @@ static int transfer(void *ctx,
             return r;
         memcpy(bounce, prefix, sizeof(prefix));
         mb8_nand_diag_wire(0x84, 0, sizeof(prefix), 1);
-#if WATCH_NAND_WRITE_TRACE
-        mb8_storage_log("[NAND WRITE] CACHE-REPAIR opcode=84 lanes=1 bytes=4 first=%02x CLKDIV=%u SEPIO=%u PIOMIXED=%u TXNEG=%u\r\n",
-            (unsigned)prefix[0], (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.CLKDIV0,
-            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.SEPIO0,
-            (unsigned)MSPIn(mb8_nand_board.mspi)->CTRL1_b.PIOMIXED,
-            (unsigned)MSPIn(mb8_nand_board.mspi)->DEV0CFG_b.TXNEG0);
-#endif
         status = program_fifo_48(0, bounce, sizeof(prefix));
         if (status)
         {
@@ -548,7 +490,6 @@ static int transfer(void *ctx,
         }
         am_util_delay_us(1);
     }
-#endif
     return DS35_OK;
 }
 
@@ -575,10 +516,6 @@ static int quad_ready(void *ctx, bool enabled)
         return DS35_IO;
     if (select_receive_timing(false) < 0)
         return DS35_IO;
-#if WATCH_NAND_FULL_FORMAT
-    if (!enabled)
-        diagnostic_read_mode = 0;
-#endif
     quad_enabled = enabled;
     return DS35_OK;
 }
@@ -764,9 +701,5 @@ int mb8_nand_mspi_open(struct ds35_bus *bus)
     am_util_delay_us(5000);
     *bus = (struct ds35_bus){
         .transfer = transfer, .delay_us = delay, .data_width = 4, .quad_ready = quad_ready};
-#if WATCH_NAND_FULL_FORMAT
-    bus->read_mode       = read_mode;
-    diagnostic_read_mode = 3; /* Format builds never accelerate data by default. */
-#endif
     return DS35_OK;
 }

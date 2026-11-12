@@ -11,58 +11,10 @@ JOBS ?= 8
 GPU_PROFILE ?= 0
 WATCH_NAND_YAFFS2 ?= 1
 WATCH_NAND_MSPI_QUAD ?= 1
-# Temporary startup diagnostics. Permanent capacity report is independent.
-WATCH_NAND_STARTUP_TESTS ?= 0
-WATCH_NAND_TEST_WRITE ?= 0
-WATCH_NAND_FULL_FORMAT ?= 0
-# Temporary automatic write-path diagnostic; never formats.
-WATCH_NAND_WRITE_TRACE ?= 0
-WATCH_NAND_TRACE_CLOCK ?= 12000000
-ifneq ($(words $(WATCH_NAND_TRACE_CLOCK)),1)
-$(error WATCH_NAND_TRACE_CLOCK must be one value)
-endif
-ifeq ($(filter $(WATCH_NAND_TRACE_CLOCK),12000000 48000000),)
-$(error WATCH_NAND_TRACE_CLOCK must be 12000000 or 48000000)
-endif
-ifneq ($(filter $(WATCH_NAND_WRITE_TRACE),0 1),$(WATCH_NAND_WRITE_TRACE))
-$(error WATCH_NAND_WRITE_TRACE must be 0 or 1)
-endif
-ifeq ($(WATCH_NAND_WRITE_TRACE),1)
-ifneq ($(WATCH_NAND_DEBUG_REPRO),1)
-$(error WRITE_TRACE requires WATCH_NAND_DEBUG_REPRO=1)
-endif
-endif
-# Temporary read-only diagnostic of the existing failed test file.
-WATCH_NAND_DEBUG_REPRO ?= 0
-ifneq ($(filter $(WATCH_NAND_DEBUG_REPRO),0 1),$(WATCH_NAND_DEBUG_REPRO))
-$(error WATCH_NAND_DEBUG_REPRO must be 0 or 1)
-endif
-ifeq ($(WATCH_NAND_DEBUG_REPRO),1)
-ifneq ($(WATCH_NAND_YAFFS2):$(WATCH_NAND_MSPI_QUAD):$(WATCH_NAND_STARTUP_TESTS):$(WATCH_NAND_FULL_FORMAT):$(WATCH_NAND_TEST_WRITE),1:1:0:0:0)
-$(error DEBUG_REPRO requires NAND=1 QUAD=1 STARTUP_TESTS=0 FULL_FORMAT=0 TEST_WRITE=0)
-endif
-endif
-# Experimental stock-derived capture timing for quad reads; 0 restores HAL defaults.
+# Quad receive timing selects the known engineering profile.
 WATCH_NAND_STOCK_RX_TIMING ?= 1
 ifneq ($(filter $(WATCH_NAND_STOCK_RX_TIMING),0 1),$(WATCH_NAND_STOCK_RX_TIMING))
 $(error WATCH_NAND_STOCK_RX_TIMING must be 0 or 1)
-endif
-ifneq ($(filter $(WATCH_NAND_FULL_FORMAT),0 1),$(WATCH_NAND_FULL_FORMAT))
-$(error WATCH_NAND_FULL_FORMAT must be 0 or 1)
-endif
-# Formatting/write-test authorization was withdrawn. Old flash commands must
-# fail before any image is built; there is deliberately no bypass flag.
-ifeq ($(WATCH_NAND_FULL_FORMAT),1)
-$(error Full-format authorization withdrawn: read-only investigation only; use WATCH_NAND_FULL_FORMAT=0)
-endif
-ifeq ($(WATCH_NAND_TEST_WRITE),1)
-$(error Write-test authorization withdrawn: read-only investigation only; use WATCH_NAND_TEST_WRITE=0)
-endif
-ifneq ($(filter $(WATCH_NAND_STARTUP_TESTS),0 1),$(WATCH_NAND_STARTUP_TESTS))
-$(error WATCH_NAND_STARTUP_TESTS must be 0 or 1)
-endif
-ifneq ($(filter $(WATCH_NAND_TEST_WRITE),0 1),$(WATCH_NAND_TEST_WRITE))
-$(error WATCH_NAND_TEST_WRITE must be 0 or 1)
 endif
 ifneq ($(filter $(WATCH_NAND_MSPI_QUAD),0 1),$(WATCH_NAND_MSPI_QUAD))
 $(error WATCH_NAND_MSPI_QUAD must be 0 or 1)
@@ -123,11 +75,6 @@ SRC := $(APP_SRC) $(PORT_SRC) $(LVGL_SRC) $(AMBIQ_SRC) $(NEMA_SRC) $(UTIL_SRC) $
 # Isolated NAND branch: guarded startup worker, no LVGL/display dependencies.
 ifeq ($(WATCH_NAND_YAFFS2),1)
 NAND_SRC := $(wildcard ../src/drivers/nand/*.c ../src/drivers/nand/yaffs2/*.c)
-# Retained for history only, never selected by a read-only investigation build.
-NAND_SRC := $(filter-out ../src/drivers/nand/mb8_storage_format.c,$(NAND_SRC))
-ifeq ($(WATCH_NAND_STARTUP_TESTS),0)
-NAND_SRC := $(filter-out ../src/drivers/nand/mb8_storage_startup_tests.c,$(NAND_SRC))
-endif
 ifeq ($(WATCH_NAND_MSPI_QUAD),1)
 NAND_SRC := $(filter-out ../src/drivers/nand/mb8_nand_iom.c,$(NAND_SRC))
 else
@@ -146,9 +93,6 @@ INCLUDE_DIRS += $(APP_DIRS) ../src/drivers/nand
 CPPFLAGS := $(addprefix -I,$(INCLUDE_DIRS)) -DPART_apollo4l -DAM_PART_APOLLO4L -DAM_PACKAGE_BGA -DAM_FREERTOS -Dgcc
 CPPFLAGS += -DWATCH_NATIVE_RGB565=1 -DWATCH_GPU_PROFILE=$(GPU_PROFILE) -DWATCH_GPU_COPY=$(GPU_COPY) -DLV_CONF_INCLUDE_SIMPLE -DLV_LVGL_H_INCLUDE_SIMPLE -DNEMA_PLATFORM=apollo4l_nemagfx -DNEMA_USE_CUSTOM_MALLOC -D'NEMA_CUSTOM_MALLOC_INCLUDE="lv_ambiq_nema_hal.h"' -DWAIT_IRQ_BINARY_SEMAPHORE=1
 CPPFLAGS += -DWATCH_NAND_STOCK_RX_TIMING=$(WATCH_NAND_STOCK_RX_TIMING)
-CPPFLAGS += -DWATCH_NAND_DEBUG_REPRO=$(WATCH_NAND_DEBUG_REPRO) -DWATCH_NAND_WRITE_TRACE=$(WATCH_NAND_WRITE_TRACE) -DWATCH_NAND_TRACE_CLOCK=$(WATCH_NAND_TRACE_CLOCK)
-CPPFLAGS += -DWATCH_NAND_FULL_FORMAT=$(WATCH_NAND_FULL_FORMAT)
-CPPFLAGS += -DWATCH_NAND_STARTUP_TESTS=$(WATCH_NAND_STARTUP_TESTS) -DWATCH_NAND_TEST_WRITE=$(WATCH_NAND_TEST_WRITE)
 CPPFLAGS += -DWATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) -DWATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD)
 ifeq ($(WATCH_NAND_YAFFS2),1)
 CPPFLAGS += -I../src/drivers/nand/yaffs2 -DCONFIG_YAFFS_DIRECT -DCONFIG_YAFFS_YAFFS2
@@ -172,7 +116,7 @@ NEMA_LIB ?= $(NEMA_PLATFORM_DIR)/gcc/bin/lib_nema_apollo4l_nemagfx.a
 FORCE:
 $(CONFIG)/.compiler-flags: FORCE
 	@mkdir -p $(CONFIG)
-	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) WATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD) WATCH_NAND_STARTUP_TESTS=$(WATCH_NAND_STARTUP_TESTS) WATCH_NAND_TEST_WRITE=$(WATCH_NAND_TEST_WRITE) WATCH_NAND_FULL_FORMAT=$(WATCH_NAND_FULL_FORMAT) WATCH_NAND_DEBUG_REPRO=$(WATCH_NAND_DEBUG_REPRO) WATCH_NAND_WRITE_TRACE=$(WATCH_NAND_WRITE_TRACE) WATCH_NAND_TRACE_CLOCK=$(WATCH_NAND_TRACE_CLOCK) WATCH_NAND_STOCK_RX_TIMING=$(WATCH_NAND_STOCK_RX_TIMING) CFLAGS=$(CFLAGS)' > $@.tmp
+	@printf '%s\n' 'NATIVE_RGB565=1 GPU_PROFILE=$(GPU_PROFILE) GPU_COPY=$(GPU_COPY) TOOLCHAIN=$(TOOLCHAIN) WATCH_NAND_YAFFS2=$(WATCH_NAND_YAFFS2) WATCH_NAND_MSPI_QUAD=$(WATCH_NAND_MSPI_QUAD) WATCH_NAND_STOCK_RX_TIMING=$(WATCH_NAND_STOCK_RX_TIMING) CFLAGS=$(CFLAGS)' > $@.tmp
 	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
 
 

@@ -76,22 +76,6 @@ int mb8_nand_mspi_plan(const uint8_t *h,
             p->address_bytes = 3;
             p->address       = ((uint32_t)h[2] << 8) | h[3];
             break;
-#if WATCH_NAND_STARTUP_TESTS || WATCH_NAND_FULL_FORMAT || WATCH_NAND_DEBUG_REPRO
-        case 0x03:
-        {
-            if (hn != 4 || width != 1 || !rx || !len || len > 256 || (h[1] & 0xf0) || h[3])
-                return DS35_EINVAL;
-            uint32_t column = ((uint32_t)h[1] << 8) | h[2];
-            if (column >= DS35_PAGE + DS35_OOB || len > DS35_PAGE + DS35_OOB - column)
-                return DS35_EINVAL;
-            /* Rev07 Table1.3: two column bytes, then8 dummy clocks.
-             * Use HAL ENTturn explicitly, not a third fake address byte. */
-            p->address_bytes = 2;
-            p->address       = column;
-            p->dummy_clocks  = 8;
-            break;
-        }
-#endif
         case 0x6b:
         case 0x32:
         {
