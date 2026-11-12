@@ -9,7 +9,9 @@ storage job requests it. NAND boot diagnostics and test modes are not built.
 Configuration
 -------------
 The default partition is intentionally unconfigured and writes are disabled.
-Set the physical block range and confirmation values in mb8_nand_board.h only
+Writes become enabled once both confirmations are set; override
+MB8_NAND_WRITES_AUTHORIZED to 0 for a read-only build. Set the physical block
+range and confirmation values in mb8_nand_board.h only
 after establishing the ownership of the region and its existing data. The
 volume must be independently provisioned for YAFFS2 with this port's OOB4 tag
 format; a stock/blank scan is not proof of compatibility. See PARTITIONS.txt.
@@ -40,8 +42,8 @@ For example, a callback can mount read-only:
     static int mount_job(void *ctx) { (void)ctx; return mb8_storage_mount(true); }
     int rc = mb8_storage_execute(mount_job, NULL);
 
-A job can also call mb8_storage_mount(false) when the partition, layout and
-write authorization are configured, then use YAFFS
+A job can also call mb8_storage_mount(false) when the partition and layout
+are confirmed and writes are enabled, then use YAFFS
 Direct APIs on /nand; later jobs can use the same mount. Check each return
 value, including yaffs_fsync and mb8_storage_unmount. A file write is not a
 durability guarantee until the appropriate sync succeeds. All open handles

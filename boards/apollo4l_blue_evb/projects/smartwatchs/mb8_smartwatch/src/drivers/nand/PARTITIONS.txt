@@ -15,9 +15,11 @@ and independently provisioning a compatible YAFFS2 OOB4 filesystem:
    mb8_nand_partitions.c. Set MB8_ACTIVE_PARTITION to the desired YAFFS entry.
 3. Set MB8_NAND_PARTITION_CONFIRMED and
    MB8_NAND_YAFFS_PROVISIONED_CONFIRMED to 1 only after verification.
-4. Set MB8_NAND_WRITES_AUTHORIZED to 1 only for approved writable media.
+4. Writes become authorized once both confirmations are set. Override
+   MB8_NAND_WRITES_AUTHORIZED to 0 to keep the build read-only.
 
-By default the active range is invalid and all confirmation values are 0.
+By default the active range is invalid, both confirmations are 0, and writes
+are disabled.
 Write authorization without both confirmations is rejected at compile time.
 The validator rejects empty/out-of-chip ranges, overlapping or duplicate
 entries, unknown types, YAFFS ranges under 16 blocks and a reserved active
